@@ -1,0 +1,8 @@
+# Dependencies for retraining the model (scripts/train_model.py).
+# Only needed if you want to retrain; the bot ships with a prebuilt model.
+datasets>=2.19
+scikit-learn>=1.4
+scipy>=1.11
+numpy>=1.26,<2.3
+pandas>=2.0
+pyarrow>=15.0

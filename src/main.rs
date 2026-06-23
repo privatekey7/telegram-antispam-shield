@@ -93,7 +93,15 @@ async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> ResponseRes
             if t.starts_with("/start") || t.starts_with("/help") {
                 bot.send_message(msg.chat.id, START_TEXT).await?;
             } else if t.starts_with("/status") {
-                bot.send_message(msg.chat.id, status_text(&state)).await?;
+                // Only the configured owner may see the bot's configuration.
+                let from_owner = msg
+                    .from
+                    .as_ref()
+                    .map(|u| state.settings.is_owner(u.id.0 as i64))
+                    .unwrap_or(false);
+                if from_owner {
+                    bot.send_message(msg.chat.id, status_text(&state)).await?;
+                }
             }
         }
         return Ok(());
@@ -101,6 +109,20 @@ async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> ResponseRes
 
     // Only moderate groups and supergroups.
     if !(msg.chat.is_group() || msg.chat.is_supergroup()) {
+        return Ok(());
+    }
+
+    // Enforce the chat allowlist before any work (including reading text), so
+    // the bot ignores — and optionally leaves — chats it was not authorised for.
+    if !state.settings.chat_allowed(msg.chat.id.0) {
+        if state.settings.leave_unknown_chats {
+            match bot.leave_chat(msg.chat.id).await {
+                Ok(_) => tracing::info!(chat = msg.chat.id.0, "left_unauthorized_chat"),
+                Err(e) => tracing::warn!(error = %e, chat = msg.chat.id.0, "leave_failed"),
+            }
+        } else {
+            tracing::debug!(chat = msg.chat.id.0, "ignored_unauthorized_chat");
+        }
         return Ok(());
     }
 
@@ -192,11 +214,17 @@ I will automatically remove spam in Russian and English.\n\n\
 Commands: /status";
 
 fn status_text(state: &AppState) -> String {
+    let allowed = match &state.settings.allowed_chats {
+        None => "all chats".to_string(),
+        Some(set) => format!("{} chat(s)", set.len()),
+    };
     format!(
-        "🛡 Anti-Spam Shield\nthreshold: {:.2}\naction: {:?}\ndry_run: {}\nexempt_admins: {}",
+        "🛡 Anti-Spam Shield\nthreshold: {:.2}\naction: {:?}\ndry_run: {}\nexempt_admins: {}\nallowed_chats: {}\nleave_unknown_chats: {}",
         state.settings.threshold.unwrap_or(state.model.threshold),
         state.settings.action,
         state.settings.dry_run,
         state.settings.exempt_admins,
+        allowed,
+        state.settings.leave_unknown_chats,
     )
 }

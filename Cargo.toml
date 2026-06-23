@@ -1,0 +1,33 @@
+[package]
+name = "telegram-antispam-shield"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "Lightweight Telegram anti-spam bot (RU/EN) with a small embedded ML model."
+license = "MIT"
+repository = "https://github.com/zalupajap/telegram-antispam-shield"
+readme = "README.md"
+
+[[bin]]
+name = "telegram-antispam-shield"
+path = "src/main.rs"
+
+[lib]
+name = "telegram_antispam_shield"
+path = "src/lib.rs"
+
+[dependencies]
+teloxide = { version = "0.13", default-features = false, features = ["ctrlc_handler", "rustls"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+regex = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+dotenvy = "0.15"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

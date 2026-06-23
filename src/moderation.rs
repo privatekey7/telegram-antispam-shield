@@ -48,6 +48,9 @@ mod tests {
             block_invite_links: true,
             exempt_admins: true,
             admin_cache_ttl_secs: 3600,
+            allowed_chats: None,
+            leave_unknown_chats: false,
+            owner_id: None,
         }
     }
 

@@ -98,6 +98,9 @@ Only `BOT_TOKEN` is required; everything else has sensible defaults.
 | `ANTISPAM_BLOCK_INVITE_LINKS` | `true` | Treat `t.me/+…` / `joinchat` links as spam. |
 | `ANTISPAM_EXEMPT_ADMINS` | `true` | Never moderate group admins. |
 | `ANTISPAM_ADMIN_CACHE_TTL` | `3600` | Seconds to cache each group's admin list. |
+| `ANTISPAM_ALLOWED_CHATS` | _(all chats)_ | Comma-separated chat IDs the bot is allowed to moderate. When set, every other chat is ignored. **Recommended if your bot's username is public**, so strangers can't add it and use your hosting. |
+| `ANTISPAM_LEAVE_UNKNOWN_CHATS` | `false` | When `true`, the bot leaves any chat not in `ANTISPAM_ALLOWED_CHATS` instead of just ignoring it. |
+| `ANTISPAM_OWNER_ID` | _(anyone)_ | Your numeric Telegram user ID. When set, only you can use `/status` in a private chat. Get it from [@userinfobot](https://t.me/userinfobot). |
 | `RUST_LOG` | `info` | Log level: `error`/`warn`/`info`/`debug`. |
 | `MODEL_PATH` | *(unset)* | Path to a custom-trained model (advanced). |
 

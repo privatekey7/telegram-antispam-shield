@@ -1,0 +1,12 @@
+/target
+.git
+.gitignore
+.env
+.env.*
+scripts/.cache/
+*.parquet
+__pycache__/
+.github/
+docs/
+*.md
+LICENSE

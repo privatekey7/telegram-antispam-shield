@@ -2,7 +2,7 @@
 name = "telegram-antispam-shield"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Lightweight Telegram anti-spam bot (RU/EN) with a small embedded ML model."
 license = "MIT"
 repository = "https://github.com/zalupajap/telegram-antispam-shield"
@@ -26,8 +26,6 @@ anyhow = "1"
 dotenvy = "0.15"
 
 [profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
+# Keep the release build lightweight and reliable on small CI/PaaS builders
+# (aggressive LTO + single codegen unit can OOM on free tiers like Railway).
 strip = true
-panic = "abort"

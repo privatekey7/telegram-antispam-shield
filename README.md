@@ -1,5 +1,7 @@
 # 🛡 Telegram Anti-Spam Shield
 
+🌍 **English** · [Русский](README.ru.md)
+
 A lightweight Telegram bot that **automatically detects and deletes spam** (in
 Russian and English) using a small built-in machine-learning model. It is fast,
 free to run, and designed so that **anyone can deploy it in ~10 minutes** — no

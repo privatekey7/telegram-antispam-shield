@@ -17,6 +17,8 @@ coding required.
 
 - 🤖 Classifies every group message as **spam** or **not spam** with a small ML model.
 - 🗑 **Deletes** spam automatically (and can optionally **ban** or **mute** the sender).
+- 🌊 **Anti-flood:** stops users who post too fast or repeat the same message —
+  deletes the whole burst and mutes them (10 min → 1 h → 1 day for repeat offences).
 - 🇷🇺 🇬🇧 Trained on real Russian + English spam.
 - 🪶 Tiny footprint: runs in a few tens of MB of RAM — fits free hosting tiers.
 - 🔌 No external AI API, no per-message cost. The model is **built into the bot**.
@@ -72,7 +74,8 @@ your group. Follow the steps in order.
 
 1. Open your Telegram **group** → **Add members** → add your bot.
 2. Make the bot an **administrator** with at least the **Delete messages**
-   permission. *(To also ban/mute spammers, enable **Ban users** too.)*
+   permission. *(Enable **Ban users** too, so the bot can mute flooders and
+   ban/mute spammers.)*
 3. Done. The bot now removes spam automatically.
 
 **Test it:** in the group, send something spammy like
@@ -101,6 +104,15 @@ Only `BOT_TOKEN` is required; everything else has sensible defaults.
 | `ANTISPAM_ALLOWED_CHATS` | _(all chats)_ | Comma-separated chat IDs the bot is allowed to moderate. When set, every other chat is ignored. **Recommended if your bot's username is public**, so strangers can't add it and use your hosting. |
 | `ANTISPAM_LEAVE_UNKNOWN_CHATS` | `false` | When `true`, the bot leaves any chat not in `ANTISPAM_ALLOWED_CHATS` instead of just ignoring it. |
 | `ANTISPAM_OWNER_ID` | _(anyone)_ | Your numeric Telegram user ID. When set, only you can use `/status` in a private chat. Get it from [@userinfobot](https://t.me/userinfobot). |
+| `ANTISPAM_FLOOD_ENABLED` | `true` | Turn anti-flood on/off. |
+| `ANTISPAM_FLOOD_MAX_MESSAGES` | `6` | Flood when a user sends **more** than this many messages within the window. An album counts as one. |
+| `ANTISPAM_FLOOD_WINDOW_SECS` | `10` | Window for the message-rate rule, seconds. |
+| `ANTISPAM_FLOOD_MAX_DUPLICATES` | `3` | Flood when this many messages with the same text arrive within the duplicate window (case, punctuation and stretched letters are ignored; texts under 3 characters are not compared). |
+| `ANTISPAM_FLOOD_DUPLICATE_WINDOW_SECS` | `120` | Window for the repeated-text rule, seconds. |
+| `ANTISPAM_FLOOD_MUTE_STEPS` | `10m,1h,1d` | Mute length for the 1st, 2nd, 3rd… offence (`s`/`m`/`h`/`d`); the last step repeats. |
+| `ANTISPAM_FLOOD_STRIKE_RESET_SECS` | `86400` | Offence counter resets after this long without a new offence. |
+| `ANTISPAM_FLOOD_NOTIFY` | `true` | Post a short "muted for flooding" notice in the chat. |
+| `ANTISPAM_FLOOD_NOTIFY_TTL_SECS` | `30` | Delete that notice after this many seconds. |
 | `RUST_LOG` | `info` | Log level: `error`/`warn`/`info`/`debug`. |
 | `MODEL_PATH` | *(unset)* | Path to a custom-trained model (advanced). |
 
@@ -113,6 +125,8 @@ See [`.env.example`](.env.example) for a copy-paste template.
 ```
 Incoming message
    │
+   ├─ 0. Anti-flood  → too many messages / same text repeated?    → delete burst + mute
+   │
    ├─ 1. Heuristics  → invite links etc. (instant, high precision) → spam → delete
    │
    ├─ 2. ML model    → spam probability ≥ threshold?              → spam → delete
@@ -120,6 +134,9 @@ Incoming message
    └─ otherwise: allow
 ```
 
+- **Anti-flood** (`src/flood.rs`) keeps a short in-memory window of each user's
+  recent messages per chat. It sees every message type, including stickers and
+  media. Offence counters live in memory and reset when the bot restarts.
 - **Feature extraction** turns text into hashed word + character n-grams
   (`src/features.rs`). Character n-grams give robustness to obfuscation and
   multilingual text.

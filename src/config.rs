@@ -6,6 +6,9 @@
 use anyhow::{anyhow, Result};
 use std::collections::HashSet;
 use std::env;
+use std::time::Duration;
+
+use crate::flood::FloodConfig;
 
 /// What to do with the author of a detected spam message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,6 +52,8 @@ pub struct Settings {
     pub leave_unknown_chats: bool,
     /// Optional owner user ID; when set, only this user gets `/status` in private.
     pub owner_id: Option<i64>,
+    /// Anti-flood rules (message rate and repeats).
+    pub flood: FloodConfig,
 }
 
 impl Settings {
@@ -69,6 +74,22 @@ impl Settings {
             Some(owner) => owner == user_id,
         }
     }
+}
+
+fn env_secs(key: &str, default: Duration) -> Duration {
+    env::var(key)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(default)
+}
+
+fn env_count(key: &str, default: usize) -> usize {
+    env::var(key)
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(default)
 }
 
 fn env_bool(key: &str, default: bool) -> bool {
@@ -101,8 +122,53 @@ impl Settings {
             owner_id: env::var("ANTISPAM_OWNER_ID")
                 .ok()
                 .and_then(|v| v.trim().parse::<i64>().ok()),
+            flood: flood_from_env(),
         }
     }
+}
+
+fn flood_from_env() -> FloodConfig {
+    let defaults = FloodConfig::default();
+    FloodConfig {
+        enabled: env_bool("ANTISPAM_FLOOD_ENABLED", defaults.enabled),
+        max_messages: env_count("ANTISPAM_FLOOD_MAX_MESSAGES", defaults.max_messages),
+        rate_window: env_secs("ANTISPAM_FLOOD_WINDOW_SECS", defaults.rate_window),
+        max_duplicates: env_count("ANTISPAM_FLOOD_MAX_DUPLICATES", defaults.max_duplicates),
+        duplicate_window: env_secs(
+            "ANTISPAM_FLOOD_DUPLICATE_WINDOW_SECS",
+            defaults.duplicate_window,
+        ),
+        mute_steps: env::var("ANTISPAM_FLOOD_MUTE_STEPS")
+            .ok()
+            .and_then(|v| parse_duration_list(&v))
+            .unwrap_or(defaults.mute_steps),
+        strike_reset: env_secs("ANTISPAM_FLOOD_STRIKE_RESET_SECS", defaults.strike_reset),
+        notify: env_bool("ANTISPAM_FLOOD_NOTIFY", defaults.notify),
+        notify_ttl: env_secs("ANTISPAM_FLOOD_NOTIFY_TTL_SECS", defaults.notify_ttl),
+    }
+}
+
+/// Parse durations like `10m,1h,1d` (suffixes `s`, `m`, `h`, `d`; bare numbers
+/// are seconds). Returns `None` if any item is invalid or the list is empty.
+fn parse_duration_list(raw: &str) -> Option<Vec<Duration>> {
+    let steps: Option<Vec<Duration>> = raw
+        .split([',', ' ', ';'])
+        .filter(|p| !p.trim().is_empty())
+        .map(|p| parse_duration(p.trim()))
+        .collect();
+    steps.filter(|s| !s.is_empty())
+}
+
+fn parse_duration(raw: &str) -> Option<Duration> {
+    let (number, multiplier) = match raw.char_indices().last()? {
+        (i, 's') => (&raw[..i], 1),
+        (i, 'm') => (&raw[..i], 60),
+        (i, 'h') => (&raw[..i], 60 * 60),
+        (i, 'd') => (&raw[..i], 24 * 60 * 60),
+        _ => (raw, 1),
+    };
+    let value = number.trim().parse::<u64>().ok().filter(|v| *v > 0)?;
+    Some(Duration::from_secs(value.checked_mul(multiplier)?))
 }
 
 /// Parse a list of chat IDs separated by commas, spaces, semicolons or newlines.
@@ -150,6 +216,23 @@ mod tests {
         assert!(parsed.contains(&-1005678));
         assert!(parsed.contains(&42));
         assert_eq!(parsed.len(), 3);
+    }
+
+    #[test]
+    fn duration_list_parsing() {
+        let parsed = parse_duration_list("10m, 1h,1d;90").unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                Duration::from_secs(600),
+                Duration::from_secs(3600),
+                Duration::from_secs(86400),
+                Duration::from_secs(90),
+            ]
+        );
+        assert_eq!(parse_duration_list(""), None);
+        assert_eq!(parse_duration_list("10m,soon"), None);
+        assert_eq!(parse_duration_list("0m"), None);
     }
 
     #[test]

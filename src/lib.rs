@@ -7,10 +7,12 @@
 //! * [`model`]      — loads the linear model and scores text.
 //! * [`heuristics`] — fast, high-precision regex rules.
 //! * [`moderation`] — combines heuristics + model into a [`moderation::Verdict`].
+//! * [`flood`]      — per-user message rate and repeat detection.
 //! * [`config`]     — runtime settings read from environment variables.
 
 pub mod config;
 pub mod features;
+pub mod flood;
 pub mod heuristics;
 pub mod model;
 pub mod moderation;

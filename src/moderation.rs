@@ -51,6 +51,7 @@ mod tests {
             allowed_chats: None,
             leave_unknown_chats: false,
             owner_id: None,
+            flood: Default::default(),
         }
     }
 

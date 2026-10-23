@@ -1,0 +1,24 @@
+# Production stack for a self-hosted VPS (see docs/deploy-vps.md).
+#
+# IMAGE_TAG comes from `.env` next to this file and is written by deploy.sh;
+# forks set IMAGE there too. Bot settings (BOT_TOKEN, ANTISPAM_*) live in
+# `bot.env`, which is never committed.
+name: antispam-shield
+
+services:
+  bot:
+    image: ${IMAGE:-ghcr.io/privatekey7/telegram-antispam-shield}:${IMAGE_TAG:?IMAGE_TAG is not set, run deploy.sh}
+    restart: unless-stopped
+    env_file: bot.env
+    # Least privilege: the bot needs only outbound HTTPS to api.telegram.org.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # Shares the host with other services; the bot needs ~30 MB.
+    mem_limit: 128m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

@@ -24,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ANTISPAM_OWNER_ID`: restrict the private-chat `/status` command to the
   configured owner so bot configuration is not exposed to strangers.
 
+- Self-hosted VPS deploy (`deploy/`, `docs/deploy-vps.md`, ADR 0005): the
+  `Deploy` workflow builds the image after green CI on `main`, pushes it to
+  GHCR tagged by commit SHA and rolls it out over SSH via a forced-command
+  `deploy.sh` with automatic rollback. Opt-in via the `DEPLOY_ENABLED`
+  repository variable.
+- CI builds the Docker image, validates the Compose file and shellchecks the
+  deploy script on every PR.
+
 ### Changed
 - `/status` now also reports `allowed_chats`, `leave_unknown_chats` and the
   anti-flood limits.

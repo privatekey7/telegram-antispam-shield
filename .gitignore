@@ -6,6 +6,7 @@
 .env
 .env.*
 !.env.example
+bot.env
 
 # Python training cache & datasets
 scripts/.cache/

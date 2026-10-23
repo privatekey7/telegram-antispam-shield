@@ -64,10 +64,9 @@ impl Model {
             );
         }
 
-        let weights: Vec<f32> = buf[HEADER_LEN..]
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
+        // Length was validated above, so there is no remainder.
+        let (chunks, _) = buf[HEADER_LEN..].as_chunks::<4>();
+        let weights: Vec<f32> = chunks.iter().map(|c| f32::from_le_bytes(*c)).collect();
 
         Ok(Self {
             num_buckets,

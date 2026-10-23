@@ -67,8 +67,12 @@ your group. Follow the steps in order.
    - Value: the token from Step 1
 6. Railway redeploys. When the **Deploy Logs** show `bot_started`, it's live. 🎉
 
-> 💡 No credit card needed for Railway's trial/free usage. The bot uses almost
-> no resources.
+> 💡 Railway's trial is free but time-limited; after it the service stops
+> unless you pick a paid plan. The bot uses almost no resources.
+>
+> 🖥 **Have a VPS already?** Run the bot there for free next to your other
+> services: GitHub builds the image and deploys it on every merge. See
+> [docs/deploy-vps.md](docs/deploy-vps.md).
 
 ### Step 3 — Add the bot to your group
 

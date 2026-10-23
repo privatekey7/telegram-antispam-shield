@@ -66,8 +66,11 @@ async fn main() -> anyhow::Result<()> {
         .enable_ctrlc_handler()
         .build();
 
-    // Railway stops containers with SIGTERM — shut down gracefully.
+    // Container runtimes stop the bot with SIGTERM — shut down gracefully.
+    // Unix-only; elsewhere (local dev on Windows) Ctrl+C is handled above.
+    #[cfg(unix)]
     let shutdown = dispatcher.shutdown_token();
+    #[cfg(unix)]
     tokio::spawn(async move {
         if let Ok(mut sigterm) =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())

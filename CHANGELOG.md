@@ -17,6 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - `/status` now also reports `allowed_chats` and `leave_unknown_chats`.
+- Dependencies refreshed within the declared MSRV (Rust 1.88); `cargo update`
+  now stays MSRV-compatible via `.cargo/config.toml`.
+- Docker images moved to Debian 13 (trixie): `rust:1.99-slim-trixie` builder,
+  `debian:trixie-slim` runtime.
+- Dependabot keeps cargo crates, GitHub Actions and Docker images up to date.
+- Repository links point to `privatekey7/telegram-antispam-shield`.
+
+### Fixed
+- The bot now compiles on non-Unix hosts (local development on Windows); the
+  SIGTERM handler is Unix-only.
 
 ## [0.1.0] - 2026-06-23
 
@@ -31,4 +41,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-stage, non-root Dockerfile and Railway deploy config.
 - GitHub Actions CI: rustfmt, clippy, tests, `cargo audit`, gitleaks.
 
-[0.1.0]: https://github.com/zalupajap/telegram-antispam-shield/releases/tag/v0.1.0
+[0.1.0]: https://github.com/privatekey7/telegram-antispam-shield/releases/tag/v0.1.0

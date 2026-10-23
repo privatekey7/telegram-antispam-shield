@@ -8,7 +8,7 @@ free to run, and designed so that **anyone can deploy it in ~10 minutes** — no
 coding required.
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new)
-[![CI](https://github.com/zalupajap/telegram-antispam-shield/actions/workflows/ci.yml/badge.svg)](https://github.com/zalupajap/telegram-antispam-shield/actions/workflows/ci.yml)
+[![CI](https://github.com/privatekey7/telegram-antispam-shield/actions/workflows/ci.yml/badge.svg)](https://github.com/privatekey7/telegram-antispam-shield/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---

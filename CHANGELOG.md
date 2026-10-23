@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Anti-flood (`src/flood.rs`): per-user sliding windows catch users who send
+  more than `ANTISPAM_FLOOD_MAX_MESSAGES` messages in
+  `ANTISPAM_FLOOD_WINDOW_SECS` (albums count once; stickers and media count) or
+  repeat the same normalized text `ANTISPAM_FLOOD_MAX_DUPLICATES` times within
+  `ANTISPAM_FLOOD_DUPLICATE_WINDOW_SECS`. The whole burst is deleted and the
+  user is muted with escalating steps (`ANTISPAM_FLOOD_MUTE_STEPS`, default
+  10m → 1h → 1d, reset after `ANTISPAM_FLOOD_STRIKE_RESET_SECS`). An optional
+  self-deleting notice tells the chat what happened. On by default; respects
+  dry-run and admin exemption.
 - Chat allowlist via `ANTISPAM_ALLOWED_CHATS`: when set, the bot only moderates
   the listed chat IDs and ignores every other chat. Protects public bots from
   strangers adding them and consuming the owner's hosting quota.
@@ -16,7 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configured owner so bot configuration is not exposed to strangers.
 
 ### Changed
-- `/status` now also reports `allowed_chats` and `leave_unknown_chats`.
+- `/status` now also reports `allowed_chats`, `leave_unknown_chats` and the
+  anti-flood limits.
+- Admin exemption is now checked for every message (including media), since
+  anti-flood looks at all message types; the admin list stays cached.
 - Dependencies refreshed within the declared MSRV (Rust 1.88); `cargo update`
   now stays MSRV-compatible via `.cargo/config.toml`.
 - Docker images moved to Debian 13 (trixie): `rust:1.99-slim-trixie` builder,

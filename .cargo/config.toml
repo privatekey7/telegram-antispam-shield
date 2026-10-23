@@ -1,0 +1,3 @@
+# Keep `cargo update` within the MSRV declared in Cargo.toml (`rust-version`).
+[resolver]
+incompatible-rust-versions = "fallback"

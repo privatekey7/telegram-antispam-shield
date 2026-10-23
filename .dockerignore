@@ -8,5 +8,6 @@ scripts/.cache/
 __pycache__/
 .github/
 docs/
+deploy/
 *.md
 LICENSE

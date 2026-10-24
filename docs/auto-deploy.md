@@ -80,11 +80,13 @@ ssh-keygen -t ed25519 -N "" -C github-deploy -f antispam_deploy_key
 ```
 
 On the server, authorize the **public** key for `deploy` with a forced command,
-so the key can do nothing except run `deploy.sh`:
+so the key can do nothing except run `deploy.sh`. `restrict` turns off every
+optional feature (forwarding, PTY, user rc), including ones future OpenSSH
+versions add:
 
 ```bash
 install -d -o deploy -g deploy -m 700 /home/deploy/.ssh
-echo 'command="/opt/antispam-shield/deploy.sh",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty <contents of antispam_deploy_key.pub>' \
+echo 'restrict,command="/opt/antispam-shield/deploy.sh" <contents of antispam_deploy_key.pub>' \
   >> /home/deploy/.ssh/authorized_keys
 chown deploy:deploy /home/deploy/.ssh/authorized_keys
 chmod 600 /home/deploy/.ssh/authorized_keys

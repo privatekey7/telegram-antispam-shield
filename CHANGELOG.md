@@ -15,6 +15,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/spam`, `/ban` and `/warn` without a reply, or replying to a message out of
   reach, no longer vanish silently: the bot shows a short hint.
 
+### Security
+- `ANTISPAM_BLOCK_FORWARDS` again catches replies that quote a text message
+  from another chat: the poller remembers which messages lost such a quote
+  during repair.
+- Admin checks no longer hold the shared chat cache lock during Bot API
+  calls, and a failed admin lookup is not retried for 60 s.
+- Group notices (`/warn`, flood mutes) no longer repeat names verbatim:
+  words that look like links or mentions are dropped and the name is cut to
+  32 characters (`id N` if nothing is left), so ads in names are not
+  amplified. Reports mark everything from the reported chat (title, name in
+  «», each line of the text behind `│`) and never show link previews.
+- Deletes, bans and mutes are retried once after Telegram's `retry_after`
+  (up to 30 s) instead of being lost during a raid.
+- The image has a `HEALTHCHECK` (`telegram-antispam-shield healthcheck`, fed
+  by a heartbeat after each `getUpdates`); compose.yaml mounts a tmpfs on
+  `/tmp` for it.
+- Release images carry an SPDX SBOM and SLSA provenance and are signed with
+  keyless cosign; base images are pinned by digest. Verification steps are in
+  docs/hosting.md.
+- CI checks the SHA-256 of the gitleaks and actionlint downloads instead of
+  running a remote install script, and declares `permissions: contents: read`.
+- The CAS cache can no longer grow past 10,000 entries.
+- Docs no longer put the bot token in browser URLs or curl arguments, no
+  longer suggest sending it to the assistant, and use `restrict` in the deploy
+  key's `authorized_keys` line.
+
 ## [0.2.0] - 2026-10-24
 
 ### Added

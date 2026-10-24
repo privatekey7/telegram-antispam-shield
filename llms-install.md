@@ -12,9 +12,10 @@ Human docs: [README.md](README.md), [docs/hosting.md](docs/hosting.md).
 - Talk to the user in their language. Keep messages short; send each 👤 step
   as a numbered list they can follow on their phone.
 - The bot token is a secret. Write it only to `.env` with mode `600`. Never
-  print it, commit it, put it in a URL you show the user, or paste it into
-  logs or issue reports. Read it back from `.env` into a shell variable when
-  you need it.
+  print it, commit it, put it in a URL you show the user or in a command's
+  arguments, or paste it into logs or issue reports. Do not ask the user to
+  send it to you in chat: they paste it into `.env` themselves. Call the Bot
+  API only through the `tg` helper from Step 5, which reads it from `.env`.
 - Ask before installing system packages, changing a firewall, or creating
   users. Never ask the user for a server password in chat; use the SSH access
   they already have (key-based) or ask them to set it up.
@@ -71,8 +72,10 @@ Send the user these steps:
 2. Send `/newbot`, choose a name and a username ending in `bot`.
 3. Send `/setprivacy` → choose the new bot → **Disable**. (The bot must see
    all group messages to check them.)
-4. Copy the token (looks like `123456789:AA…`) and send it to me — or, if you
-   prefer, paste it into `.env` yourself when I create the file.
+4. Keep the token (looks like `123456789:AA…`) to yourself for now: when I
+   have created `.env`, paste it there yourself. Do not send it in this chat,
+   where it would stay in the history. If it ever leaks, `/revoke` it in
+   @BotFather and put the new one in `.env`.
 
 ## Step 4 — Download the files
 
@@ -91,12 +94,19 @@ container (read-only, no capabilities, 128 MB memory cap, rotated logs).
 
 ## Step 5 — Token
 
-Set `BOT_TOKEN=` in `.env` (replace the placeholder line; do not add a second
-one). Then verify it without printing it:
+Ask the user to set `BOT_TOKEN=` in `.env` themselves (replace the
+placeholder line; do not add a second one), for example with
+`nano ~/antispam-shield/.env`. Then verify it without printing it. The helper
+below keeps the token out of command arguments, which other users of the host
+can see in `ps`, and out of the shell history: `printf` is a shell builtin and
+curl reads the URL from stdin.
 
 ```bash
-TOKEN="$(sed -n 's/^BOT_TOKEN=//p' .env)"
-curl -fsS "https://api.telegram.org/bot$TOKEN/getMe"
+tg() {
+  printf 'url = "https://api.telegram.org/bot%s/%s"\n' \
+    "$(sed -n 's/^BOT_TOKEN=//p' .env)" "$1" | curl -fsS -K -
+}
+tg getMe
 ```
 
 **Check:** the response has `"ok":true`. Note `result.id` (the bot's user ID)
@@ -104,7 +114,7 @@ and `result.username`.
 
 - `"can_read_all_group_messages":false` → privacy mode is still on. Ask the
   user to repeat `/setprivacy` → **Disable** in @BotFather, then re-check.
-- HTTP 401 → wrong token; ask for it again.
+- HTTP 401 → wrong token; ask the user to check the line in `.env`.
 
 ## Step 6 — 👤 Add the bot to the group
 
@@ -121,7 +131,7 @@ Send the user these steps:
 The bot is not running yet, so you can read its pending updates directly:
 
 ```bash
-curl -fsS "https://api.telegram.org/bot$TOKEN/getUpdates"
+tg getUpdates
 ```
 
 If this returns a `Conflict` error, another copy of the bot is running or a
@@ -152,7 +162,7 @@ the user's server. For several groups, separate IDs with commas.
 ## Step 8 — Check the bot's rights
 
 ```bash
-curl -fsS "https://api.telegram.org/bot$TOKEN/getChatMember?chat_id=<chat.id>&user_id=<bot id>"
+tg "getChatMember?chat_id=<chat.id>&user_id=<bot id>"
 ```
 
 **Check:** `"status":"administrator"`, `"can_delete_messages":true` and
@@ -169,7 +179,8 @@ docker compose ps
 docker compose logs --tail 50 bot
 ```
 
-**Check:** the container is `running` and the logs contain `model_loaded`
+**Check:** the container is `running` (images with a healthcheck show
+`healthy` within about a minute) and the logs contain `model_loaded`
 (with `persistent=true`) and `bot_started`, with no `ERROR` lines.
 
 | Log line | Fix |

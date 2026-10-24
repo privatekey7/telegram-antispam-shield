@@ -152,8 +152,44 @@ journalctl -u antispam-shield -f
 
 1. Остановите бота (или сделайте это до первого запуска).
 2. Добавьте бота в группу и напишите там любое сообщение.
-3. Откройте в браузере `https://api.telegram.org/bot<ТОКЕН>/getUpdates`
-   (никому не показывайте эту ссылку: в ней ваш токен).
+3. В папке с `.env` запросите ожидающие апдейты. Токен берётся из `.env` и
+   передаётся curl через stdin, поэтому не попадает ни в историю браузера,
+   ни в историю shell, ни в список процессов:
+
+   ```bash
+   printf 'url = "https://api.telegram.org/bot%s/getUpdates"\n' \
+     "$(sed -n 's/^BOT_TOKEN=//p' .env)" | curl -fsS -K -
+   ```
 4. Найдите `"chat":{"id":-100…` — это отрицательное число и есть ID группы.
    `"from":{"id":…}` — ваш ID для `ANTISPAM_OWNER_ID`.
 5. Впишите их в `.env` и запустите бота.
+
+## Проверка здоровья
+
+В образе есть `HEALTHCHECK`. После каждого удачного запроса к Telegram бот
+пишет время в `/tmp/antispam-heartbeat`, а `telegram-antispam-shield
+healthcheck` падает, если отметке больше 90 секунд. `docker compose ps`
+показывает `healthy` или `unhealthy`, а
+`docker inspect -f '{{.State.Health.Status}}' <контейнер>` печатает только
+статус. При `read_only: true` каталог `/tmp` должен быть доступен на запись:
+compose.yaml монтирует туда маленький tmpfs. Путь меняет
+`ANTISPAM_HEARTBEAT_FILE`.
+
+## Проверка образа
+
+Образы релизов подписаны [cosign](https://docs.sigstore.dev/) (без ключей,
+workflow Release) и несут SBOM в формате SPDX и provenance SLSA. Образы до
+0.2.x вышли раньше и не подписаны.
+
+```bash
+image=ghcr.io/privatekey7/telegram-antispam-shield:<версия>
+cosign verify "$image" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/privatekey7/telegram-antispam-shield/\.github/workflows/release\.yml@refs/tags/v'
+docker buildx imagetools inspect "$image" --format '{{ json .SBOM }}'
+docker buildx imagetools inspect "$image" --format '{{ json .Provenance }}'
+```
+
+Чтобы запускать именно проверенный образ, впишите его digest в `.env`:
+`IMAGE_TAG=<версия>@sha256:…` (digest из вывода `cosign verify`). Тег можно
+переставить на другой образ, digest нельзя.

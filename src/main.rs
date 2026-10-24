@@ -406,10 +406,15 @@ fn status_text(state: &AppState) -> String {
         "off".to_string()
     };
     format!(
-        "🛡 Anti-Spam Shield\nthreshold: {:.2}\naction: {:?}\ndry_run: {}\nexempt_admins: {}\nallowed_chats: {}\nleave_unknown_chats: {}\nflood: {}",
+        "🛡 Anti-Spam Shield\nthreshold: {:.2}\naction: {:?}\ndry_run: {}\njob_offers: {}\nexempt_admins: {}\nallowed_chats: {}\nleave_unknown_chats: {}\nflood: {}",
         state.settings.threshold.unwrap_or(state.model.threshold),
         state.settings.action,
         state.settings.dry_run,
+        if state.settings.block_job_offers {
+            "blocked"
+        } else {
+            "allowed"
+        },
         state.settings.exempt_admins,
         allowed,
         state.settings.leave_unknown_chats,

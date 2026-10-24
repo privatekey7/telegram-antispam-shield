@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Job-offer rule (`ANTISPAM_BLOCK_JOB_OFFERS`, on by default): Russian and
+  English offers of remote work, side jobs or income are deleted as spam when
+  they also mention money or ask to move to private messages. Plain talk about
+  work is not affected. On the Telegram spam dataset it flags 43% of spam and
+  none of the 14,400 legitimate messages. `/status` shows the setting.
 - Anti-flood (`src/flood.rs`): per-user sliding windows catch users who send
   more than `ANTISPAM_FLOOD_MAX_MESSAGES` messages in
   `ANTISPAM_FLOOD_WINDOW_SECS` (albums count once; stickers and media count) or

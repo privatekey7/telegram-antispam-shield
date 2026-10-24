@@ -15,7 +15,7 @@ use telegram_antispam_shield::shield::Incoming;
 
 use super::actions::{self, FloodAction, Sender};
 use super::reports::{self, Incident};
-use super::{chats, commands, rights, AppState};
+use super::{chats, commands, polling, rights, AppState};
 
 const START_TEXT: &str = "🛡 Anti-Spam Shield is running.\n\n\
 Add me to your group and grant the \"Delete messages\" admin right. \
@@ -352,7 +352,7 @@ fn is_forwarded(msg: &Message) -> bool {
     let external_reply = match &msg.kind {
         MessageKind::Common(common) => common.external_reply.is_some(),
         _ => false,
-    };
+    } || polling::quoted_another_chat(msg.chat.id.0, msg.id.0);
     msg.forward_origin().is_some() || external_reply || msg.story().is_some()
 }
 

@@ -44,6 +44,10 @@ fn open_store(dir: &Path) -> Option<Store> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // `telegram-antispam-shield healthcheck`: the container HEALTHCHECK.
+    if std::env::args().nth(1).as_deref() == Some("healthcheck") {
+        std::process::exit(if bot::health::check() { 0 } else { 1 });
+    }
     let _ = dotenvy::dotenv();
     init_logging();
 

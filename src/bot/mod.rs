@@ -8,6 +8,7 @@ mod cas;
 mod chats;
 mod commands;
 mod handlers;
+pub mod health;
 mod polling;
 mod reports;
 mod rights;

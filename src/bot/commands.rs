@@ -137,7 +137,7 @@ async fn warn_notice(
     count: u32,
     banned: bool,
 ) {
-    let who = sender.display_name();
+    let who = sender.notice_name();
     let limit = state.settings.warn_limit;
     // Plain text (no parse mode), so user names cannot inject markup.
     let notice = if banned {

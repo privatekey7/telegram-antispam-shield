@@ -8,10 +8,13 @@
 //! its text is neither moderated nor read as a command.
 //!
 //! Updates are fetched here as raw JSON, an unreadable `external_reply` is
-//! dropped, and only then are they parsed. Everything else works like
-//! teloxide's own polling.
+//! dropped, and only then are they parsed. The fact that the message quoted
+//! another chat is kept aside (see [`quoted_another_chat`]), so the
+//! forwards rule still sees it. Everything else works like teloxide's own
+//! polling.
 
 use std::collections::VecDeque;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use futures::stream::{self, BoxStream, StreamExt};
@@ -29,6 +32,34 @@ use teloxide::RequestError;
 const POLL_TIMEOUT_SECS: u32 = 10;
 /// Pause after a failed `getUpdates` call, unless Telegram names its own.
 const RETRY_DELAY: Duration = Duration::from_secs(5);
+/// Messages remembered as quoting another chat. A message is handled right
+/// after its batch is parsed, so a few batches' worth is plenty.
+const QUOTE_MARKS: usize = 1024;
+
+/// `(chat, message)` of recent messages whose unreadable `external_reply`
+/// was dropped, oldest first.
+static QUOTED_ANOTHER_CHAT: Mutex<VecDeque<(i64, i32)>> = Mutex::new(VecDeque::new());
+
+/// Whether message `message` in `chat` replied with a quote from another
+/// chat that teloxide could not read and the poller dropped.
+pub fn quoted_another_chat(chat: i64, message: i32) -> bool {
+    quote_marks().contains(&(chat, message))
+}
+
+fn mark_quoted(chat: i64, message: i32) {
+    let mut marks = quote_marks();
+    if marks.len() >= QUOTE_MARKS {
+        marks.pop_front();
+    }
+    marks.push_back((chat, message));
+}
+
+/// The marks; a poisoned lock only means a panic elsewhere, the data is fine.
+fn quote_marks() -> std::sync::MutexGuard<'static, VecDeque<(i64, i32)>> {
+    QUOTED_ANOTHER_CHAT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
 
 /// `getUpdates` that returns raw JSON instead of parsed updates.
 #[derive(Serialize)]
@@ -147,7 +178,10 @@ impl<'a> AsUpdateStream<'a> for Poller {
                     }
                 };
                 match result {
-                    Ok(raw) => buffer.extend(poller.accept(raw)),
+                    Ok(raw) => {
+                        super::health::beat();
+                        buffer.extend(poller.accept(raw));
+                    }
                     Err(e) => {
                         let delay = e.retry_after().map_or(RETRY_DELAY, |s| s.duration());
                         tokio::select! {
@@ -167,12 +201,16 @@ impl<'a> AsUpdateStream<'a> for Poller {
 /// Repair and parse one raw update. `None` only for JSON that is not an
 /// update at all.
 fn parse(value: &mut Value) -> Option<Update> {
+    let quoted = unreadable_quote_in(value);
     let repaired = repair(value);
     let had_text = mentions_text(value);
     // Not `from_value`: teloxide's `Update` only deserializes from text and
     // turns anything else into `UpdateKind::Error`.
     match serde_json::from_str::<Update>(&value.to_string()) {
         Ok(update) => {
+            if let Some((chat, message)) = quoted {
+                mark_quoted(chat, message);
+            }
             if repaired > 0 {
                 tracing::debug!(update = update.id.0, repaired, "update_repaired");
             }
@@ -187,6 +225,21 @@ fn parse(value: &mut Value) -> Option<Update> {
             None
         }
     }
+}
+
+/// `(chat, message)` of the update's message if its own `external_reply`
+/// is one teloxide cannot parse.
+fn unreadable_quote_in(value: &Value) -> Option<(i64, i32)> {
+    let message = ["message", "edited_message"]
+        .iter()
+        .find_map(|key| value.get(key))?;
+    let reply = message.get("external_reply")?;
+    if serde_json::from_value::<ExternalReplyInfo>(reply.clone()).is_ok() {
+        return None;
+    }
+    let chat = message.get("chat")?.get("id")?.as_i64()?;
+    let id = message.get("message_id")?.as_i64()?;
+    Some((chat, i32::try_from(id).ok()?))
 }
 
 /// Drop every `external_reply` teloxide cannot parse; returns how many.
@@ -279,12 +332,38 @@ mod tests {
     }
 
     #[test]
+    fn dropped_quote_is_remembered() {
+        let mut raw = command_replying_elsewhere();
+        raw["message"]["message_id"] = serde_json::json!(20);
+        assert!(!quoted_another_chat(-1004302764108, 20));
+
+        parse(&mut raw).unwrap();
+
+        assert!(quoted_another_chat(-1004302764108, 20));
+        assert!(!quoted_another_chat(-1004302764108, 21));
+        assert!(!quoted_another_chat(-1, 20));
+    }
+
+    #[test]
+    fn quote_marks_are_bounded() {
+        for id in 0..(QUOTE_MARKS as i32 + 5) {
+            mark_quoted(-77, 1_000_000 + id);
+        }
+        assert!(quote_marks().len() <= QUOTE_MARKS);
+        assert!(quoted_another_chat(-77, 1_000_000 + QUOTE_MARKS as i32 + 4));
+    }
+
+    #[test]
     fn readable_external_replies_are_kept() {
         let mut raw = command_replying_elsewhere();
+        raw["message"]["message_id"] = serde_json::json!(30);
         raw["message"]["external_reply"]["dice"] = serde_json::json!({"emoji": "🎲", "value": 3});
 
+        assert_eq!(unreadable_quote_in(&raw), None);
         assert_eq!(repair(&mut raw), 0);
         assert!(raw["message"].get("external_reply").is_some());
+        parse(&mut raw).unwrap();
+        assert!(!quoted_another_chat(-1004302764108, 30), "teloxide sees it");
     }
 
     #[test]

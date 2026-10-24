@@ -151,6 +151,7 @@ docker compose logs -f    # "bot_started" — бот запущен 🎉
 | `ANTISPAM_HISTORY_WINDOW_SECS` | `86400` | Сколько помнить сообщения и вступления для правил выше. |
 | `ANTISPAM_CLEANUP_ON_BAN` | `true` | При действии `ban` или `mute` удалять и остальные сообщения спамера за окно истории. |
 | `ANTISPAM_DATA_DIR` | `/data` в Docker | Папка для `antispam.db`, где хранятся доверенные участники между перезапусками. Не задана — только память. |
+| `ANTISPAM_HEARTBEAT_FILE` | `/tmp/antispam-heartbeat` | Отметка для `HEALTHCHECK` образа ([docs/hosting.ru.md](docs/hosting.ru.md#проверка-здоровья)). |
 | `ANTISPAM_MODEL_MIN_CHARS` | `20` | Сообщения короче этого и без ссылок не проверяются моделью («лс», «всем привет» несут слишком мало сигнала). На тестовых данных спама меньше не ловится. |
 | `ANTISPAM_BLOCK_BOT_MENTIONS` | `true` | Считать спамом сообщение из одного `@username` бота (`@gjwgjglkewbot`) — так запускают спам через бизнес-ботов. |
 | `ANTISPAM_MIXED_SCRIPT_WORDS` | `2` | Спам, если столько слов смешивают кириллицу и латиницу (`зaрaботок` с латинской `a`). `0` — выключить. |

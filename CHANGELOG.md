@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Messages that reply to a text message from another chat lost their text in
+  teloxide and were neither moderated nor read as commands. This includes
+  replies to messages from before the group became a supergroup. The bot now
+  polls Telegram itself and repairs such updates before parsing them (ADR
+  0010). Any text that is still lost is logged as `unreadable_message`.
+- `/spam`, `/ban` and `/warn` without a reply, or replying to a message out of
+  reach, no longer vanish silently: the bot shows a short hint.
+
 ### Security
 - Learned samples (`/spam`, **Not spam**, **Ban** in a report) now apply only
   in the chat where they were taught. Before, an admin of any chat with the
@@ -24,17 +33,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subscribe to `edited_message` updates. An edit is checked like a new
   message, and a report marks it as edited. It does not count toward
   anti-flood, repeats or trust, and cannot run admin commands.
-
-### Fixed
-- Messages that reply to a text message from another chat lost their text in
-  teloxide and were neither moderated nor read as commands. This includes
-  replies to messages from before the group became a supergroup. The bot now
-  polls Telegram itself and repairs such updates before parsing them (ADR
-  0010). Any text that is still lost is logged as `unreadable_message`.
-- `/spam`, `/ban` and `/warn` without a reply, or replying to a message out of
-  reach, no longer vanish silently: the bot shows a short hint.
-
-### Security
 - The Deploy workflow no longer deploys a pull request from a fork whose
   branch is named `main`. Before, such a pull request passed the
   `branches: [main]` filter: once `DEPLOY_ENABLED` was set, its code was built
@@ -68,6 +66,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The bot warns at startup when `ANTISPAM_ALLOWED_CHATS` or
   `ANTISPAM_OWNER_ID` is unset, and the docs now strongly recommend the
   allowlist.
+- `ANTISPAM_BLOCK_FORWARDS` again catches replies that quote a text message
+  from another chat: the poller remembers which messages lost such a quote
+  during repair.
+- Admin checks no longer hold the shared chat cache lock during Bot API
+  calls, and a failed admin lookup is not retried for 60 s.
+- Group notices (`/warn`, flood mutes) no longer repeat names verbatim:
+  words that look like links or mentions are dropped and the name is cut to
+  32 characters (`id N` if nothing is left), so ads in names are not
+  amplified. Reports mark everything from the reported chat (title, name in
+  «», each line of the text behind `│`) and never show link previews.
+- Deletes, bans and mutes are retried once after Telegram's `retry_after`
+  (up to 30 s) instead of being lost during a raid.
+- The image has a `HEALTHCHECK` (`telegram-antispam-shield healthcheck`, fed
+  by a heartbeat after each `getUpdates`); compose.yaml mounts a tmpfs on
+  `/tmp` for it.
+- Release images carry an SPDX SBOM and SLSA provenance and are signed with
+  keyless cosign; base images are pinned by digest. Verification steps are in
+  docs/hosting.md.
+- CI checks the SHA-256 of the gitleaks and actionlint downloads instead of
+  running a remote install script, and declares `permissions: contents: read`.
+- The CAS cache can no longer grow past 10,000 entries.
+- Docs no longer put the bot token in browser URLs or curl arguments, no
+  longer suggest sending it to the assistant, and use `restrict` in the deploy
+  key's `authorized_keys` line.
 
 ## [0.2.0] - 2026-10-24
 

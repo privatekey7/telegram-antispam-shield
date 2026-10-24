@@ -12,13 +12,14 @@ use telegram_antispam_shield::moderation::{MessageFacts, Verdict};
 use telegram_antispam_shield::shield::Incoming;
 
 use super::actions::{self, FloodAction, Sender};
-use super::chats;
-use super::AppState;
+use super::reports::{self, Incident};
+use super::{chats, commands, AppState};
 
 const START_TEXT: &str = "🛡 Anti-Spam Shield is running.\n\n\
 Add me to your group and grant the \"Delete messages\" admin right. \
 I will automatically remove spam in Russian and English.\n\n\
-Commands: /status";
+Private: /status (owner). In a group, reply to a message with \
+/spam (delete, ban, learn), /ban or /warn.";
 
 pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> ResponseResult<()> {
     if msg.chat.is_private() {
@@ -44,12 +45,22 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
         return Ok(());
     }
 
+    if let Some(command) = msg
+        .text()
+        .and_then(|t| commands::parse(t, &state.bot_username))
+    {
+        if is_commander(&bot, &state, &msg).await {
+            commands::run(&bot, &state, &msg, command).await;
+            return Ok(());
+        }
+    }
+
     // The group's own posts: anonymous admins, auto-forwards from the linked
     // channel and comments made as that channel.
     if msg.is_automatic_forward() || is_own_post(&bot, &state, &msg).await {
         return Ok(());
     }
-    let Some(sender) = sender_of(&msg) else {
+    let Some(sender) = actions::sender_of(&msg) else {
         return Ok(()); // a bot
     };
     if let Sender::User(user) = sender {
@@ -127,8 +138,18 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
     }
     doomed.sort_unstable();
     doomed.dedup();
+    let deleted = doomed.len();
     actions::delete_all(&bot, msg.chat.id, doomed).await;
     actions::punish_spammer(&bot, state.settings.action, msg.chat.id, &sender).await;
+    let incident = Incident {
+        chat: &msg.chat,
+        sender: &sender,
+        text: visible,
+        reason,
+        score,
+        deleted,
+    };
+    reports::send(&bot, &state, incident).await;
     Ok(())
 }
 
@@ -211,14 +232,21 @@ async fn chat_allowed(bot: &Bot, state: &AppState, chat: ChatId) -> bool {
     false
 }
 
-/// The author of a message, or `None` for bots. Anonymous admins and the
-/// linked channel are filtered out earlier by [`is_own_post`].
-fn sender_of(msg: &Message) -> Option<Sender<'_>> {
-    if let Some(chat) = &msg.sender_chat {
-        return Some(Sender::Channel(chat));
+/// Whether `msg` comes from someone allowed to run admin commands: an
+/// admin, the owner, or an anonymous admin posting as the group.
+async fn is_commander(bot: &Bot, state: &AppState, msg: &Message) -> bool {
+    if msg
+        .sender_chat
+        .as_ref()
+        .is_some_and(|c| c.id == msg.chat.id)
+    {
+        return true;
     }
-    let user = msg.from.as_ref()?;
-    (!user.is_bot).then_some(Sender::User(user))
+    let Some(user) = msg.from.as_ref() else {
+        return false;
+    };
+    state.settings.owner_id == Some(user.id.0 as i64)
+        || chats::is_admin(bot, state, msg.chat.id, user.id).await
 }
 
 /// Whether the group itself posted `msg`: as an anonymous admin (the sender
@@ -339,6 +367,12 @@ fn status_text(state: &AppState) -> String {
         None => "memory (resets on restart)".to_string(),
     };
     let on_off = |on: bool| if on { "on" } else { "off" };
+    let learned = state.shield().learned_spam();
+    let reports = match (settings.report_chat, settings.owner_id) {
+        (Some(chat), _) => format!("chat {chat}"),
+        (None, Some(_)) => "owner (private)".to_string(),
+        (None, None) => "off (set ANTISPAM_OWNER_ID or ANTISPAM_REPORT_CHAT)".to_string(),
+    };
     let opt_in = [
         (!settings.blocked_scripts.is_empty(), "blocked_scripts"),
         (!settings.stop_words.is_empty(), "stop_words"),
@@ -355,6 +389,7 @@ fn status_text(state: &AppState) -> String {
         "🛡 Anti-Spam Shield\nthreshold: {threshold:.2} (model from {} chars)\naction: {:?}\n\
          dry_run: {}\njob_offers: {}\nnewcomer_links: {}\ncampaigns: {}\nrepeat_limit: {}\n\
          bot_mentions: {}\nmixed_script_words: {}\nemoji_limit: {}\nopt_in: {}\ncas: {}\n\
+         learned_spam: {learned}\nwarn_limit: {}\nreports: {reports}\n\
          trust: {trust_line}\nstorage: {storage}\nexempt_admins: {}\nallowed_chats: {allowed}\n\
          leave_unknown_chats: {}\nflood: {flood_line}",
         settings.model_min_chars,
@@ -369,6 +404,7 @@ fn status_text(state: &AppState) -> String {
         settings.emoji_limit,
         if opt_in.is_empty() { "none" } else { &opt_in },
         on_off(settings.cas.enabled),
+        settings.warn_limit,
         settings.exempt_admins,
         settings.leave_unknown_chats,
     )

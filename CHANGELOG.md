@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Learned samples (`/spam`, **Not spam**, **Ban** in a report) now apply only
+  in the chat where they were taught. Before, an admin of any chat with the
+  bot could make it delete messages and ban people in other chats, and push
+  out the samples other chats had learned (ADR 0011).
+- Learned samples are bounded: only the first 800 chars and 128 distinct words
+  of a text are kept, a text with the same words is stored once, and each chat
+  keeps at most 1,000 samples per kind (5,000 in total, taken first from the
+  chat holding the most). Before, repeated `/spam` on one long message could
+  exhaust the container's memory and crash the bot on every restart.
+- Upgrading sets the old shared samples aside (table `samples_unscoped`, never
+  loaded): every chat starts with no learned samples. ADR 0011 shows how to
+  copy them into a chat by hand.
+
 ### Fixed
 - Messages that reply to a text message from another chat lost their text in
   teloxide and were neither moderated nor read as commands. This includes

@@ -1,0 +1,140 @@
+//! Admin commands in a group, sent as a reply to the offending message:
+//!
+//! * `/spam` — delete it and the author's recent messages, ban the author and
+//!   learn the text, so similar messages are deleted automatically;
+//! * `/ban`  — the same without learning;
+//! * `/warn` — delete it and warn the author; `ANTISPAM_WARN_LIMIT` warnings
+//!   within a month mean a ban.
+//!
+//! These are explicit admin actions, so they work in dry-run mode too.
+
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use teloxide::prelude::*;
+
+use telegram_antispam_shield::config::Action;
+
+use super::actions::{self, Sender};
+use super::AppState;
+
+/// How long a warning notice stays in the chat.
+const WARNING_NOTICE_TTL: Duration = Duration::from_secs(60);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Command {
+    Spam,
+    Ban,
+    Warn,
+}
+
+/// The command in `text`, if it is one of ours. `/spam@OtherBot` is not.
+pub fn parse(text: &str, bot_username: &str) -> Option<Command> {
+    let first = text.split_whitespace().next()?.strip_prefix('/')?;
+    let (name, target) = match first.split_once('@') {
+        Some((name, target)) => (name, Some(target)),
+        None => (first, None),
+    };
+    if target.is_some_and(|t| !t.eq_ignore_ascii_case(bot_username)) {
+        return None;
+    }
+    match name.to_ascii_lowercase().as_str() {
+        "spam" => Some(Command::Spam),
+        "ban" => Some(Command::Ban),
+        "warn" => Some(Command::Warn),
+        _ => None,
+    }
+}
+
+/// Carry out `command` sent by an admin as `msg`.
+pub async fn run(bot: &Bot, state: &AppState, msg: &Message, command: Command) {
+    let chat = msg.chat.id;
+    // The command itself is noise once handled.
+    actions::delete_all(bot, chat, [msg.id.0]).await;
+
+    let Some(target) = msg.reply_to_message() else {
+        return; // nothing to act on
+    };
+    let Some(sender) = actions::sender_of(target) else {
+        return; // a bot or the group itself
+    };
+    let text = target
+        .text()
+        .or_else(|| target.caption())
+        .unwrap_or_default();
+    tracing::info!(
+        chat = chat.0,
+        user = sender.id(),
+        admin = msg.from.as_ref().map_or(0, |u| u.id.0),
+        command = ?command,
+        "admin_command"
+    );
+
+    match command {
+        Command::Spam | Command::Ban => {
+            let recent = {
+                let mut shield = state.shield();
+                if command == Command::Spam {
+                    shield.learn_spam(chat.0, sender.id(), text);
+                }
+                shield.recent_from(chat.0, sender.id())
+            };
+            actions::delete_all(bot, chat, recent.into_iter().chain([target.id.0])).await;
+            actions::punish_spammer(bot, Action::DeleteAndBan, chat, &sender).await;
+        }
+        Command::Warn => {
+            actions::delete_all(bot, chat, [target.id.0]).await;
+            let (count, ban) = state.shield().warn(chat.0, sender.id(), unix_now());
+            if ban {
+                actions::punish_spammer(bot, Action::DeleteAndBan, chat, &sender).await;
+            }
+            warn_notice(bot, state, chat, &sender, count, ban).await;
+        }
+    }
+}
+
+/// Tell the chat about a warning; the notice deletes itself after a minute.
+async fn warn_notice(
+    bot: &Bot,
+    state: &AppState,
+    chat: ChatId,
+    sender: &Sender<'_>,
+    count: u32,
+    banned: bool,
+) {
+    let who = sender.display_name();
+    let limit = state.settings.warn_limit;
+    // Plain text (no parse mode), so user names cannot inject markup.
+    let notice = if banned {
+        format!("⛔ {who} — бан после {count} предупреждений · banned after {count} warnings")
+    } else if limit > 0 {
+        format!("⚠️ {who} — предупреждение {count}/{limit} · warning {count}/{limit}")
+    } else {
+        format!("⚠️ {who} — предупреждение · warning")
+    };
+    actions::send_temporary(bot, chat, notice, WARNING_NOTICE_TTL).await;
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_our_commands_only() {
+        assert_eq!(parse("/spam", "ShieldBot"), Some(Command::Spam));
+        assert_eq!(
+            parse("/SPAM@shieldbot please", "ShieldBot"),
+            Some(Command::Spam)
+        );
+        assert_eq!(parse("/ban", "ShieldBot"), Some(Command::Ban));
+        assert_eq!(parse("/warn за флуд", "ShieldBot"), Some(Command::Warn));
+        assert_eq!(parse("/spam@OtherBot", "ShieldBot"), None);
+        assert_eq!(parse("/start", "ShieldBot"), None);
+        assert_eq!(parse("это не /spam", "ShieldBot"), None);
+    }
+}

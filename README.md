@@ -28,6 +28,9 @@ machine with Docker — a server, a Raspberry Pi, a NAS or a container platform.
   Cyrillic/Latin words, emoji walls, `@somebot`-only triggers, plus opt-in
   stop words, blocked scripts, forward and link/mention limits. Known
   spammers are looked up in the [CAS](https://cas.chat) database.
+- 👮 **Admin tools:** reply `/spam` once and the whole reworded wave is
+  deleted from then on; `/ban`, `/warn` with auto-ban; reports with
+  **Not spam** / **Ban** buttons that undo mistakes and teach the bot.
 - 🤝 **Trusts regulars:** after three normal messages a member's links and
   slang are no longer second-guessed by the model; newcomers posting links,
   slow repeaters and multi-account spam waves are caught instead.
@@ -155,6 +158,9 @@ Only `BOT_TOKEN` is required; everything else has sensible defaults.
 | `ANTISPAM_LINK_LIMIT` | `0` | Spam when a message has this many links. `0` = off. |
 | `ANTISPAM_MENTION_LIMIT` | `0` | Spam when a message has this many `@mentions`. `0` = off. |
 | `ANTISPAM_DELETE_SERVICE_MESSAGES` | `false` | Delete "X joined" / "X left" notices. |
+| `ANTISPAM_REPORT_CHAT` | _(owner)_ | Chat ID that receives a report about every deleted spam message, with **Not spam** / **Ban** buttons. Unset = reports go to `ANTISPAM_OWNER_ID` in private (press Start in the bot first); neither set = no reports. |
+| `ANTISPAM_WARN_LIMIT` | `3` | `/warn`s within a month after which the member is banned. `0` = warnings never ban. |
+| `ANTISPAM_SIMILARITY_THRESHOLD` | `0.5` | How close (cosine of word sets, `0–1`) a message must be to a `/spam`-ed one to be deleted automatically. |
 | `ANTISPAM_EXEMPT_ADMINS` | `true` | Never moderate group admins. Posts of the group itself (anonymous admins, the linked channel) are always exempt. |
 | `ANTISPAM_ADMIN_CACHE_TTL` | `3600` | Seconds to cache each group's admin list. |
 | `ANTISPAM_ALLOWED_CHATS` | _(all chats)_ | Comma-separated chat IDs the bot is allowed to moderate. When set, every other chat is ignored. **Recommended if your bot's username is public**, so strangers can't add it and use your hosting. |
@@ -176,6 +182,31 @@ See [`.env.example`](.env.example) for a copy-paste template.
 
 ---
 
+## 👮 Admin commands and reports
+
+Reply to a message in the group with:
+
+| Command | What happens |
+|---|---|
+| `/spam` | Deletes the message and the author's recent messages, bans the author and **learns** the text: similar messages (even reworded) are deleted automatically from now on. |
+| `/ban` | The same without learning. |
+| `/warn` | Deletes the message and warns the author (a notice for a minute). `ANTISPAM_WARN_LIMIT` warnings in a month mean a ban. |
+
+Commands work for group admins, anonymous admins and `ANTISPAM_OWNER_ID`,
+also in dry-run mode. The command message itself is deleted.
+
+**Reports.** Set `ANTISPAM_OWNER_ID` (or `ANTISPAM_REPORT_CHAT`) and every
+automatic deletion is reported with the reason, the sender and the text:
+
+- **✅ Not spam** — unbans or unmutes the sender, makes them trusted and
+  learns the text as fine, so similar messages pass;
+- **🚫 Ban** (when the action only deletes) — bans, cleans up and learns the
+  text as spam.
+
+Learned samples, warnings and reports live in `antispam.db` next to trust.
+
+---
+
 ## 🧠 How it works
 
 ```
@@ -183,7 +214,8 @@ Incoming message
    │
    ├─ 0. Anti-flood  → too many messages / same text repeated?    → delete burst + mute
    │
-   ├─ 1. History     → listed in CAS, same text 3× a day, same promo from other accounts → spam
+   ├─ 1. History     → listed in CAS, same text 3× a day, same promo from other accounts,
+   │                   looks like a /spam-ed message                → spam
    │
    ├─ 2. Rules       → buttons, hidden characters, invite links   → spam
    │     (trusted members stop here)

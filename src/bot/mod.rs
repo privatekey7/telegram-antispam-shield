@@ -6,7 +6,9 @@
 mod actions;
 mod cas;
 mod chats;
+mod commands;
 mod handlers;
+mod reports;
 
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -16,6 +18,7 @@ use telegram_antispam_shield::flood::FloodGuard;
 use telegram_antispam_shield::shield::Shield;
 
 pub use handlers::{on_chat_member, on_message};
+pub use reports::on_callback;
 
 /// How often expired flood and history entries are dropped.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(10 * 60);
@@ -23,6 +26,8 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(10 * 60);
 /// Shared application state injected into every handler.
 pub struct AppState {
     pub settings: Settings,
+    /// The bot's own username, to tell `/spam@ThisBot` from other bots' commands.
+    bot_username: String,
     /// Held only for synchronous work, never across an `.await`.
     shield: Mutex<Shield>,
     /// Held only for synchronous checks, never across an `.await`.
@@ -32,9 +37,10 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(shield: Shield) -> AppState {
+    pub fn new(shield: Shield, bot_username: String) -> AppState {
         let settings = shield.settings().clone();
         AppState {
+            bot_username,
             flood: Mutex::new(FloodGuard::new(settings.flood.clone())),
             shield: Mutex::new(shield),
             chats: tokio::sync::Mutex::new(chats::ChatCache::default()),

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use teloxide::prelude::*;
-use teloxide::types::{ChatMemberUpdated, MessageEntityKind};
+use teloxide::types::{ChatMemberUpdated, MessageEntityKind, MessageKind, User};
 
 use telegram_antispam_shield::config::Action;
 use telegram_antispam_shield::flood::{FloodVerdict, IncomingMessage};
@@ -33,11 +33,14 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
     }
 
     if let Some(members) = msg.new_chat_members() {
-        let now = Instant::now();
-        let mut shield = state.shield();
         for member in members.iter().filter(|m| !m.is_bot) {
-            shield.joined(msg.chat.id.0, member.id.0 as i64, now);
+            on_join(&bot, &state, msg.chat.id, member).await;
         }
+        delete_service_message(&bot, &state, &msg).await;
+        return Ok(());
+    }
+    if msg.left_chat_member().is_some() {
+        delete_service_message(&bot, &state, &msg).await;
         return Ok(());
     }
 
@@ -64,6 +67,12 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
         return Ok(());
     }
 
+    // Only untrusted members are looked up in the CAS database.
+    let trusted = state.shield().is_trusted(msg.chat.id.0, sender.id());
+    let known_spammer = match sender {
+        Sender::User(user) if !trusted => state.cas.is_listed(user.id).await,
+        _ => false,
+    };
     let visible = text.unwrap_or_default();
     let links = hidden_links(&msg, visible);
     let incoming = Incoming {
@@ -75,7 +84,9 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
             hidden_links: &links,
             inline_keyboard: has_inline_keyboard(&msg),
             has_link: has_link_entity(&msg),
+            forwarded: is_forwarded(&msg),
         },
+        known_spammer,
     };
     let (decision, recent) = {
         let mut shield = state.shield();
@@ -131,11 +142,36 @@ pub async fn on_chat_member(
         !update.old_chat_member.kind.is_present() && update.new_chat_member.kind.is_present();
     let user = &update.new_chat_member.user;
     if joined && !user.is_bot && chat_allowed(&bot, &state, update.chat.id).await {
-        state
-            .shield()
-            .joined(update.chat.id.0, user.id.0 as i64, Instant::now());
+        on_join(&bot, &state, update.chat.id, user).await;
     }
     Ok(())
+}
+
+/// Remember the join for the newcomer rule and stop known spammers at the
+/// door when the action allows banning or muting.
+async fn on_join(bot: &Bot, state: &AppState, chat: ChatId, user: &User) {
+    state
+        .shield()
+        .joined(chat.0, user.id.0 as i64, Instant::now());
+    if state.settings.action == Action::DeleteOnly || !state.cas.is_listed(user.id).await {
+        return;
+    }
+    tracing::info!(
+        chat = chat.0,
+        user = user.id.0,
+        dry_run = state.settings.dry_run,
+        "cas_listed_member_joined"
+    );
+    if !state.settings.dry_run {
+        actions::punish_spammer(bot, state.settings.action, chat, &Sender::User(user)).await;
+    }
+}
+
+/// Delete a "joined" / "left" notice when configured.
+async fn delete_service_message(bot: &Bot, state: &AppState, msg: &Message) {
+    if state.settings.delete_service_messages && !state.settings.dry_run {
+        actions::delete_all(bot, msg.chat.id, [msg.id.0]).await;
+    }
 }
 
 /// Private chat: answer /start, /help and /status so admins can verify it.
@@ -253,6 +289,15 @@ fn has_link_entity(msg: &Message) -> bool {
     })
 }
 
+/// Forwarded, or replying with a quote from another chat, or a story.
+fn is_forwarded(msg: &Message) -> bool {
+    let external_reply = match &msg.kind {
+        MessageKind::Common(common) => common.external_reply.is_some(),
+        _ => false,
+    };
+    msg.forward_origin().is_some() || external_reply || msg.story().is_some()
+}
+
 /// Inline buttons on a message that did not come through an inline bot.
 fn has_inline_keyboard(msg: &Message) -> bool {
     msg.via_bot.is_none()
@@ -294,17 +339,36 @@ fn status_text(state: &AppState) -> String {
         None => "memory (resets on restart)".to_string(),
     };
     let on_off = |on: bool| if on { "on" } else { "off" };
+    let opt_in = [
+        (!settings.blocked_scripts.is_empty(), "blocked_scripts"),
+        (!settings.stop_words.is_empty(), "stop_words"),
+        (settings.block_forwards, "forwards"),
+        (settings.link_limit > 0, "link_limit"),
+        (settings.mention_limit > 0, "mention_limit"),
+    ]
+    .iter()
+    .filter(|(on, _)| *on)
+    .map(|(_, name)| *name)
+    .collect::<Vec<_>>()
+    .join(", ");
     format!(
-        "🛡 Anti-Spam Shield\nthreshold: {threshold:.2}\naction: {:?}\ndry_run: {}\n\
-         job_offers: {}\nnewcomer_links: {}\ncampaigns: {}\nrepeat_limit: {}\n\
+        "🛡 Anti-Spam Shield\nthreshold: {threshold:.2} (model from {} chars)\naction: {:?}\n\
+         dry_run: {}\njob_offers: {}\nnewcomer_links: {}\ncampaigns: {}\nrepeat_limit: {}\n\
+         bot_mentions: {}\nmixed_script_words: {}\nemoji_limit: {}\nopt_in: {}\ncas: {}\n\
          trust: {trust_line}\nstorage: {storage}\nexempt_admins: {}\nallowed_chats: {allowed}\n\
          leave_unknown_chats: {}\nflood: {flood_line}",
+        settings.model_min_chars,
         settings.action,
         settings.dry_run,
         on_off(settings.block_job_offers),
         on_off(settings.block_newcomer_links),
         on_off(settings.block_campaigns),
         settings.repeat_limit,
+        on_off(settings.block_bot_mentions),
+        settings.mixed_script_words,
+        settings.emoji_limit,
+        if opt_in.is_empty() { "none" } else { &opt_in },
+        on_off(settings.cas.enabled),
         settings.exempt_admins,
         settings.leave_unknown_chats,
     )

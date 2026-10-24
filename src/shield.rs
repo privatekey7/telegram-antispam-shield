@@ -23,6 +23,9 @@ pub struct Incoming<'a> {
     pub sender: i64,
     pub message_id: i32,
     pub facts: MessageFacts<'a>,
+    /// The sender is listed in the Combot Anti-Spam database (looked up by
+    /// the caller for untrusted senders only).
+    pub known_spammer: bool,
 }
 
 /// What to do about one message.
@@ -81,8 +84,10 @@ impl Shield {
             .record(msg.chat, msg.sender, msg.message_id, text, now);
         let standing = self.standing(msg.chat, msg.sender, now);
 
-        let decision = self
-            .history_rule(msg.chat, &echoes, standing)
+        let known_spammer = (msg.known_spammer && !standing.trusted)
+            .then(|| spam(Reason::KnownSpammer, Vec::new()));
+        let decision = known_spammer
+            .or_else(|| self.history_rule(msg.chat, &echoes, standing))
             .unwrap_or_else(|| Decision {
                 verdict: classify(&self.model, &self.settings, &msg.facts, standing),
                 also_delete: Vec::new(),
@@ -95,6 +100,12 @@ impl Shield {
         }
         let chars = text::strip_invisible(msg.facts.text).trim().chars().count();
         Decision::allow(self.trust.record_clean(msg.chat, msg.sender, chars))
+    }
+
+    /// Whether `sender` is trusted in `chat` (trusted members are not looked
+    /// up in external spam databases).
+    pub fn is_trusted(&self, chat: i64, sender: i64) -> bool {
+        self.trust.is_trusted(chat, sender)
     }
 
     /// Remember that `user` joined `chat` (for the newcomer-link rule).
@@ -168,6 +179,7 @@ mod tests {
             sender,
             message_id,
             facts: MessageFacts::text(text),
+            known_spammer: false,
         }
     }
 
@@ -262,6 +274,34 @@ mod tests {
                 now
             )),
             Some(Reason::NewcomerLink)
+        );
+    }
+
+    #[test]
+    fn known_spammer_is_blocked_unless_trusted() {
+        let mut shield = shield();
+        let now = Instant::now();
+        let listed = Incoming {
+            known_spammer: true,
+            ..msg(7, 1, "Добрый вечер, подскажите по мосту")
+        };
+
+        assert_eq!(
+            reason(&shield.inspect(&listed, now)),
+            Some(Reason::KnownSpammer)
+        );
+        shield.trust.approve(CHAT, 7);
+        assert_eq!(
+            shield
+                .inspect(
+                    &Incoming {
+                        message_id: 2,
+                        ..listed
+                    },
+                    now
+                )
+                .verdict,
+            Verdict::Allow
         );
     }
 

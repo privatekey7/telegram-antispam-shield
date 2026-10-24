@@ -6,6 +6,7 @@
 //! * [`features`]   — text -> hashed feature buckets (mirrors the trainer).
 //! * [`model`]      — loads the linear model and scores text.
 //! * [`heuristics`] — fast, high-precision regex rules.
+//! * [`meta`]       — shape checks: mixed alphabets, emoji, mentions, scripts.
 //! * [`text`]       — text clean-up and normalization.
 //! * [`moderation`] — combines heuristics + model into a [`moderation::Verdict`].
 //! * [`history`]    — recent messages and joins (repeats, campaigns, newcomers).
@@ -20,6 +21,7 @@ pub mod features;
 pub mod flood;
 pub mod heuristics;
 pub mod history;
+pub mod meta;
 pub mod model;
 pub mod moderation;
 pub mod shield;

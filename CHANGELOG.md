@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Shape checks for untrusted members, after tg-spam's meta checks, with
+  defaults measured on public datasets and a replayed real chat:
+  `@somebot`-only triggers (`ANTISPAM_BLOCK_BOT_MENTIONS`, on), words mixing
+  Cyrillic and Latin (`ANTISPAM_MIXED_SCRIPT_WORDS=2`), emoji walls
+  (`ANTISPAM_EMOJI_LIMIT=10`). Opt-in: `ANTISPAM_BLOCKED_SCRIPTS`,
+  `ANTISPAM_STOP_WORDS`, `ANTISPAM_BLOCK_FORWARDS` (forwards, external
+  quotes, stories), `ANTISPAM_LINK_LIMIT`, `ANTISPAM_MENTION_LIMIT`.
+- CAS lookups (`ANTISPAM_CAS_ENABLED`, on): untrusted members are checked
+  against the Combot Anti-Spam database when they post and when they join
+  (listed joiners are banned or muted at once if the action allows). Cached
+  for an hour; a slow or failing API never blocks the bot.
+- `ANTISPAM_DELETE_SERVICE_MESSAGES`: delete "joined" / "left" notices.
+- `ANTISPAM_MODEL_MIN_CHARS=20`: shorter messages without links skip the
+  model. This removes false positives on "лс" or "всем привет" without
+  losing recall on the test data.
 - Trusted members (`ANTISPAM_TRUST_AFTER=3`, `ANTISPAM_TRUST_MIN_CHARS=10`,
   ADR 0007): after three clean messages a member skips the model, job-offer
   and newcomer-link checks. Any spam verdict resets them. Trust is saved
@@ -74,7 +89,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The spam decision is now one pure function, `Shield::inspect`
   (`src/shield.rs`). The Telegram glue moved from `main.rs` to `src/bot/`.
 - On a replay of a real 13k-message spam-ridden chat, spam caught rose
-  from 21% to 67% and false positives fell from 1.8% to 0.26%.
+  from 21% to 99% and false positives fell from 1.8% to 0.18%.
 - `/status` now also reports `allowed_chats`, `leave_unknown_chats` and the
   anti-flood limits.
 - Admin exemption is now checked for every message (including media), since

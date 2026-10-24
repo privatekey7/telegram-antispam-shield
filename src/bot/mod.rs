@@ -4,6 +4,7 @@
 //! only talks to Telegram: reading updates, deleting, banning and muting.
 
 mod actions;
+mod cas;
 mod chats;
 mod handlers;
 
@@ -27,6 +28,7 @@ pub struct AppState {
     /// Held only for synchronous checks, never across an `.await`.
     flood: Mutex<FloodGuard>,
     chats: tokio::sync::Mutex<chats::ChatCache>,
+    cas: cas::Cas,
 }
 
 impl AppState {
@@ -36,6 +38,7 @@ impl AppState {
             flood: Mutex::new(FloodGuard::new(settings.flood.clone())),
             shield: Mutex::new(shield),
             chats: tokio::sync::Mutex::new(chats::ChatCache::default()),
+            cas: cas::Cas::new(settings.cas.clone()),
             settings,
         }
     }

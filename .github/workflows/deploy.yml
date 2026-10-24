@@ -4,6 +4,11 @@ name: Deploy
 # SHA, and rolls it out to your server over SSH (docs/auto-deploy.md). Inert
 # until a repository sets the variable DEPLOY_ENABLED=true. Versioned images
 # for everyone come from release.yml.
+#
+# Only pushes to main of this repository deploy. `branches: [main]` below
+# matches the head branch *name* only, so a pull request from a fork whose
+# branch is called main also completes CI here. The job guard in `image`
+# rejects such runs; see "Who can trigger a deploy" in docs/auto-deploy.md.
 on:
   workflow_run:
     workflows: [CI]
@@ -11,12 +16,15 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Pull request runs get a group of their own: they are skipped by the guard
+# anyway, and in the shared group they would cancel a queued deploy.
 concurrency:
-  group: deploy
+  group: >-
+    ${{ github.event_name == 'workflow_run' && github.event.workflow_run.event != 'push'
+    && format('deploy-ignored-{0}', github.run_id) || 'deploy' }}
   cancel-in-progress: false
 
-permissions:
-  contents: read
+permissions: {}
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
@@ -24,9 +32,18 @@ env:
 jobs:
   image:
     name: build & push image
+    # Trusted runs only: a manual run from main, or green CI for a push to
+    # main of this repository. Never a pull request, even one from a fork
+    # branch named main.
     if: >-
-      vars.DEPLOY_ENABLED == 'true' &&
-      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+      vars.DEPLOY_ENABLED == 'true' && (
+        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'workflow_run' &&
+         github.event.workflow_run.conclusion == 'success' &&
+         github.event.workflow_run.event == 'push' &&
+         github.event.workflow_run.head_branch == 'main' &&
+         github.event.workflow_run.head_repository.full_name == github.repository)
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -37,6 +54,15 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # Full history, so the next step can see origin/main.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Commit is on main
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::$(git rev-parse HEAD) is not on main; refusing to deploy"
+            exit 1
+          fi
       - id: tag
         run: echo "tag=sha-$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v4
@@ -54,11 +80,15 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  # Runs only after `image` succeeded, so the guard above covers it too. The
+  # `production` environment holds the SSH secrets; protect it with required
+  # reviewers (docs/auto-deploy.md) as a second gate.
   deploy:
     name: roll out to server
     needs: image
     runs-on: ubuntu-latest
     environment: production
+    permissions: {}
     steps:
       - name: Deploy over SSH
         env:
@@ -72,4 +102,5 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           # The server's forced command runs deploy.sh with this tag only.
-          ssh -i ~/.ssh/deploy_key -o BatchMode=yes "$TARGET" "$TAG"
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$TARGET" "$TAG"

@@ -105,6 +105,20 @@ secrets:
 | `DEPLOY_SSH_KEY` | contents of `antispam_deploy_key` (the private key) |
 | `DEPLOY_KNOWN_HOSTS` | output of `ssh-keyscan -t ed25519 <server>` run from a trusted machine |
 
+Protect the environment in the same screen. These secrets open a shell on
+your server, and the server holds `BOT_TOKEN`. (GitHub offers these rules on
+public repositories; private ones need a paid plan.)
+
+- **Deployment branches and tags** → *Selected branches and tags* → add
+  `main`. This blocks manual runs started from any other branch. It does
+  **not** block CI-triggered runs: a `workflow_run` workflow always runs on
+  the default branch, so GitHub sees `main` whatever started it.
+- **Required reviewers** → add yourself. Every deploy then waits until you
+  click **Approve** in the run. This is the only gate that still holds if the
+  check in the workflow is ever broken, for example by an edit in your fork.
+  The price: deploys are no longer fully automatic. If you are the only
+  maintainer, leave *Prevent self-review* off, or nobody can approve.
+
 In **Settings → Secrets and variables → Actions → Variables**, add
 `DEPLOY_ENABLED` = `true`. Without it the Deploy workflow does nothing, which
 keeps forks inert.
@@ -115,12 +129,42 @@ Then delete the local private key file.
 
 ## 4. First deploy
 
-Run **Actions → Deploy → Run workflow**. The first push creates the package
+Run **Actions → Deploy → Run workflow** on branch `main` (runs from other
+branches are skipped). If you added required reviewers, approve the
+`production` deployment in the run. The first push creates the package
 `ghcr.io/<you>/telegram-antispam-shield`. If the deploy step fails with
 `denied` / `unauthorized` while pulling, open the package settings on GitHub
 and set its visibility to **Public** (the source is public anyway), then re-run.
 
 After that, every merge to `main` with green CI deploys automatically.
+
+## Who can trigger a deploy
+
+Only a push to `main` of your repository, or a manual run from `main`, by
+someone with write access. Pull requests never deploy, whether they come from
+a fork or not.
+
+That takes an explicit check. Deploy starts when CI completes, and its
+`branches: [main]` filter compares only the branch *name*. A pull request
+from a fork whose branch is called `main` passes that filter and runs CI in
+your repository. Without the check, its code would be built and deployed to
+your server. So the `image` job in `.github/workflows/deploy.yml` runs only
+when:
+
+- `DEPLOY_ENABLED` is `true`, and
+- it is a manual run (`workflow_dispatch`) from `refs/heads/main`, or a CI run
+  that succeeded and that was started by a `push` (not `pull_request`) to the
+  branch `main` of this repository (`head_repository.full_name ==
+  github.repository`).
+
+After checkout the job also checks that the commit is in the history of
+`origin/main`, and it tags the image from that commit only. `deploy` runs
+only after `image` succeeds and ships the tag that `image` built. Pull
+request runs also stay out of the deploy concurrency group, so they cannot
+cancel a queued deploy.
+
+If you edit `deploy.yml`, keep these checks. Required reviewers on
+`production` are the backstop if a check breaks.
 
 ## Operations
 

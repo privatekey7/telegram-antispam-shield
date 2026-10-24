@@ -15,6 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/spam`, `/ban` and `/warn` without a reply, or replying to a message out of
   reach, no longer vanish silently: the bot shows a short hint.
 
+### Security
+- The Deploy workflow no longer deploys a pull request from a fork whose
+  branch is named `main`. Before, such a pull request passed the
+  `branches: [main]` filter: once `DEPLOY_ENABLED` was set, its code was built
+  and rolled out to the server that holds `BOT_TOKEN`. Deploys now run only
+  for green CI on a push to `main` of the same repository, or a manual run
+  from `main`. The commit must be on `origin/main`. Job tokens drop to the
+  minimum, and pull request runs can no longer cancel a queued deploy.
+  `docs/auto-deploy.md` explains the check and recommends required reviewers
+  on the `production` environment.
+
 ## [0.2.0] - 2026-10-24
 
 ### Added

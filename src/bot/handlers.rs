@@ -6,6 +6,7 @@ use std::time::Instant;
 use teloxide::prelude::*;
 use teloxide::types::{ChatMemberUpdated, MessageEntityKind, MessageKind, User};
 
+use telegram_antispam_shield::access::Access;
 use telegram_antispam_shield::config::Action;
 use telegram_antispam_shield::flood::{FloodVerdict, IncomingMessage};
 use telegram_antispam_shield::moderation::{MessageFacts, Verdict};
@@ -13,13 +14,17 @@ use telegram_antispam_shield::shield::Incoming;
 
 use super::actions::{self, FloodAction, Sender};
 use super::reports::{self, Incident};
-use super::{chats, commands, AppState};
+use super::{chats, commands, rights, AppState};
 
 const START_TEXT: &str = "🛡 Anti-Spam Shield is running.\n\n\
 Add me to your group and grant the \"Delete messages\" admin right. \
 I will automatically remove spam in Russian and English.\n\n\
-Private: /status (owner). In a group, reply to a message with \
-/spam (delete, ban, learn), /ban or /warn.";
+Private: /status (owner). In a group, admins with the \"Ban users\" right \
+reply to a message with /spam (delete, ban, learn), /ban or /warn.";
+
+/// What `/status` tells anyone but the owner: nothing about the configuration.
+const STATUS_FOR_OTHERS: &str = "🛡 Anti-Spam Shield is running. \
+/status details are only for the bot's owner (ANTISPAM_OWNER_ID).";
 
 pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> ResponseResult<()> {
     if msg.chat.is_private() {
@@ -49,9 +54,23 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
         .text()
         .and_then(|t| commands::parse(t, &state.bot_username))
     {
-        if is_commander(&bot, &state, &msg).await {
-            commands::run(&bot, &state, &msg, command).await;
-            return Ok(());
+        let as_group = msg
+            .sender_chat
+            .as_ref()
+            .is_some_and(|c| c.id == msg.chat.id);
+        let action = command.action();
+        let from = msg.from.as_ref();
+        match rights::authorize(&bot, &state, msg.chat.id, from, as_group, action).await {
+            Access::Allowed => {
+                commands::run(&bot, &state, &msg, command).await;
+                return Ok(());
+            }
+            // Not an admin: an ordinary message, moderated below.
+            Access::NotAdmin => {}
+            refused => {
+                commands::refuse(&bot, &msg, refused).await;
+                return Ok(());
+            }
         }
     }
 
@@ -203,14 +222,18 @@ async fn on_private_message(bot: &Bot, msg: &Message, state: &AppState) -> Respo
     if text.starts_with("/start") || text.starts_with("/help") {
         bot.send_message(msg.chat.id, START_TEXT).await?;
     } else if text.starts_with("/status") {
-        // Only the configured owner may see the bot's configuration.
+        // Only the configured owner may see the bot's configuration: the
+        // threshold and limits would help a spammer tune around them.
         let from_owner = msg
             .from
             .as_ref()
             .is_some_and(|u| state.settings.is_owner(u.id.0 as i64));
-        if from_owner {
-            bot.send_message(msg.chat.id, status_text(state)).await?;
-        }
+        let text = if from_owner {
+            status_text(state)
+        } else {
+            STATUS_FOR_OTHERS.to_owned()
+        };
+        bot.send_message(msg.chat.id, text).await?;
     }
     Ok(())
 }
@@ -230,23 +253,6 @@ async fn chat_allowed(bot: &Bot, state: &AppState, chat: ChatId) -> bool {
         tracing::debug!(chat = chat.0, "ignored_unauthorized_chat");
     }
     false
-}
-
-/// Whether `msg` comes from someone allowed to run admin commands: an
-/// admin, the owner, or an anonymous admin posting as the group.
-async fn is_commander(bot: &Bot, state: &AppState, msg: &Message) -> bool {
-    if msg
-        .sender_chat
-        .as_ref()
-        .is_some_and(|c| c.id == msg.chat.id)
-    {
-        return true;
-    }
-    let Some(user) = msg.from.as_ref() else {
-        return false;
-    };
-    state.settings.owner_id == Some(user.id.0 as i64)
-        || chats::is_admin(bot, state, msg.chat.id, user.id).await
 }
 
 /// Whether the group itself posted `msg`: as an anonymous admin (the sender

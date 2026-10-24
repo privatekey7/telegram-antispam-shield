@@ -46,7 +46,10 @@ async fn main() -> anyhow::Result<()> {
     let _ = dotenvy::dotenv();
     init_logging();
 
-    let settings = Settings::from_env();
+    let settings = Settings::from_env()?;
+    for warning in settings.access_warnings() {
+        tracing::warn!("{warning}");
+    }
     let model = Model::load_default()?;
     let store = settings.data_dir.as_deref().and_then(open_store);
     tracing::info!(

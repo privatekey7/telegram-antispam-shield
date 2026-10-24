@@ -6,16 +6,19 @@
 //! * `/warn` — delete it and warn the author; `ANTISPAM_WARN_LIMIT` warnings
 //!   within a month mean a ban.
 //!
-//! These are explicit admin actions, so they work in dry-run mode too.
+//! These are explicit admin actions, so they work in dry-run mode too. They
+//! need the "Ban users" right (`/warn` only "Delete messages" when warnings
+//! never ban); anonymous admins are refused (see `access`).
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use teloxide::prelude::*;
 
+use telegram_antispam_shield::access::{Access, AdminAction};
 use telegram_antispam_shield::config::Action;
 
 use super::actions::{self, Sender};
-use super::AppState;
+use super::{rights, AppState};
 
 /// How long a warning notice stays in the chat.
 const WARNING_NOTICE_TTL: Duration = Duration::from_secs(60);
@@ -33,6 +36,17 @@ pub enum Command {
     Spam,
     Ban,
     Warn,
+}
+
+impl Command {
+    /// The admin action, for the rights check.
+    pub fn action(self) -> AdminAction {
+        match self {
+            Command::Spam => AdminAction::Spam,
+            Command::Ban => AdminAction::Ban,
+            Command::Warn => AdminAction::Warn,
+        }
+    }
 }
 
 /// The command in `text`, if it is one of ours. `/spam@OtherBot` is not.
@@ -53,7 +67,7 @@ pub fn parse(text: &str, bot_username: &str) -> Option<Command> {
     }
 }
 
-/// Carry out `command` sent by an admin as `msg`.
+/// Carry out `command` sent as `msg` by someone the rights check allowed.
 pub async fn run(bot: &Bot, state: &AppState, msg: &Message, command: Command) {
     let chat = msg.chat.id;
     // The command itself is noise once handled.
@@ -103,6 +117,15 @@ pub async fn run(bot: &Bot, state: &AppState, msg: &Message, command: Command) {
             warn_notice(bot, state, chat, &sender, count, ban).await;
         }
     }
+}
+
+/// Turn down a command from an admin without the right it needs, or from an
+/// anonymous admin: delete it and say why for a few seconds.
+pub async fn refuse(bot: &Bot, msg: &Message, access: Access) {
+    tracing::info!(chat = msg.chat.id.0, access = ?access, "admin_command_refused");
+    actions::delete_all(bot, msg.chat.id, [msg.id.0]).await;
+    let text = format!("🔒 {}", rights::refusal_text(access));
+    actions::send_temporary(bot, msg.chat.id, text, HINT_TTL).await;
 }
 
 /// Tell the chat about a warning; the notice deletes itself after a minute.

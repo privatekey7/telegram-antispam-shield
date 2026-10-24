@@ -145,8 +145,11 @@ Changing the code and want every merge to go live on your server? See
 
 ## Restricting the bot to your chats
 
-If your bot's username is public, anyone can add it to their group and use
-your server. Set `ANTISPAM_ALLOWED_CHATS` to your group ID(s):
+Every bot's username is public, so anyone can add your bot to their group,
+use your server, send you spam reports and, as an admin there, feed the bot's
+learned samples with `/spam`. Set `ANTISPAM_ALLOWED_CHATS` to your group
+ID(s); the bot warns at startup while it is unset, and refuses to start if an
+entry is not a number:
 
 1. Stop the bot (or do this before the first start).
 2. Add the bot to the group and send any message there.

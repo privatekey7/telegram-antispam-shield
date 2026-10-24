@@ -117,8 +117,11 @@ platforms, a build from source with systemd — see
 > and run `docker compose up -d`. The bot will only log what it *would* delete.
 > Set it back to `false` when you're confident.
 >
-> 🔐 Bot username public? Lock the bot to your group with
-> `ANTISPAM_ALLOWED_CHATS` — [how to find the group ID](docs/hosting.md#restricting-the-bot-to-your-chats).
+> 🔐 Lock the bot to your groups with `ANTISPAM_ALLOWED_CHATS` —
+> [how to find the group ID](docs/hosting.md#restricting-the-bot-to-your-chats).
+> Every bot's username is public: without the list anyone can add the bot to
+> their group, use your server, send you reports and, as an admin there, use
+> `/spam` to feed the bot's learned samples.
 
 ---
 
@@ -162,10 +165,10 @@ Only `BOT_TOKEN` is required; everything else has sensible defaults.
 | `ANTISPAM_WARN_LIMIT` | `3` | `/warn`s within a month after which the member is banned. `0` = warnings never ban. |
 | `ANTISPAM_SIMILARITY_THRESHOLD` | `0.5` | How close (cosine of word sets, `0–1`) a message must be to a `/spam`-ed one to be deleted automatically. |
 | `ANTISPAM_EXEMPT_ADMINS` | `true` | Never moderate group admins. Posts of the group itself (anonymous admins, the linked channel) are always exempt. |
-| `ANTISPAM_ADMIN_CACHE_TTL` | `3600` | Seconds to cache each group's admin list. |
-| `ANTISPAM_ALLOWED_CHATS` | _(all chats)_ | Comma-separated chat IDs the bot is allowed to moderate. When set, every other chat is ignored. **Recommended if your bot's username is public**, so strangers can't add it and use your hosting. |
+| `ANTISPAM_ADMIN_CACHE_TTL` | `3600` | Seconds to cache each group's admin list and rights (used to exempt admins and to turn away non-admins). Commands and report buttons always re-check the admin's rights with Telegram. |
+| `ANTISPAM_ALLOWED_CHATS` | _(all chats)_ | Comma-separated numeric chat IDs the bot is allowed to moderate. When set, every other chat is ignored and sends no reports. **Strongly recommended**: without it, strangers can add the bot, use your hosting, send you reports and teach it samples. An entry that is not a number (such as `@mygroup`) stops the bot at startup. |
 | `ANTISPAM_LEAVE_UNKNOWN_CHATS` | `false` | When `true`, the bot leaves any chat not in `ANTISPAM_ALLOWED_CHATS` instead of just ignoring it. |
-| `ANTISPAM_OWNER_ID` | _(anyone)_ | Your numeric Telegram user ID. When set, only you can use `/status` in a private chat. Get it from [@userinfobot](https://t.me/userinfobot). |
+| `ANTISPAM_OWNER_ID` | _(none)_ | Your numeric Telegram user ID. Only you see the `/status` details in a private chat; anyone else (everyone, when unset) only learns that the bot is running. The owner may also use commands and report buttons in every allowed chat. Get it from [@userinfobot](https://t.me/userinfobot). |
 | `ANTISPAM_FLOOD_ENABLED` | `true` | Turn anti-flood on/off. |
 | `ANTISPAM_FLOOD_MAX_MESSAGES` | `6` | Flood when a user sends **more** than this many messages within the window. An album counts as one. |
 | `ANTISPAM_FLOOD_WINDOW_SECS` | `10` | Window for the message-rate rule, seconds. |
@@ -192,10 +195,22 @@ Reply to a message in the group with:
 | `/ban` | The same without learning. |
 | `/warn` | Deletes the message and warns the author (a notice for a minute). `ANTISPAM_WARN_LIMIT` warnings in a month mean a ban. |
 
-Commands work for group admins, anonymous admins and `ANTISPAM_OWNER_ID`,
-also in dry-run mode. The command message itself is deleted. A command that
-is not a reply, or replies to a message out of reach (such as one sent before
-the group became a supergroup), gets a 20-second hint instead.
+Commands work for `ANTISPAM_OWNER_ID` and for group admins with the
+**Ban users** right (the group's creator has it), also in dry-run mode: the
+bot never bans for someone who could not ban alone. `/warn` needs the same
+right while warnings can end in a ban; with `ANTISPAM_WARN_LIMIT=0` the
+**Delete messages** right is enough. The bot asks Telegram for the admin's
+current rights before acting, so a demoted admin loses access at once.
+
+**Anonymous admins** (writing as the group) cannot use commands: Telegram
+does not say which admin wrote the message, so their rights cannot be
+checked. Turn off **Remain anonymous** for the command, or use the report
+buttons, which always show who pressed them.
+
+The command message itself is deleted. A command that is not a reply, or
+replies to a message out of reach (such as one sent before the group became a
+supergroup), gets a 20-second hint instead; so does a command from an admin
+without the right.
 
 **Reports.** Set `ANTISPAM_OWNER_ID` (or `ANTISPAM_REPORT_CHAT`) and every
 automatic deletion is reported with the reason, the sender and the text:
@@ -204,6 +219,10 @@ automatic deletion is reported with the reason, the sender and the text:
   learns the text as fine, so similar messages pass;
 - **🚫 Ban** (when the action only deletes) — bans, cleans up and learns the
   text as spam.
+
+Both buttons need the owner or an admin of the reported chat with the **Ban
+users** right. Each chat sends at most 20 reports per 10 minutes; the rest
+are only logged.
 
 Learned samples, warnings and reports live in `antispam.db` next to trust.
 

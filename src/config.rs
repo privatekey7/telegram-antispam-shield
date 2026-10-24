@@ -104,6 +104,13 @@ pub struct Settings {
     pub cas: CasConfig,
     /// Delete "joined" / "left" service messages.
     pub delete_service_messages: bool,
+    /// Cosine similarity at which a message matches a learned sample.
+    pub similarity_threshold: f32,
+    /// Ban a member after this many admin warnings; 0 = never.
+    pub warn_limit: u32,
+    /// Chat that receives spam reports with "not spam" buttons; falls back
+    /// to a private message to the owner.
+    pub report_chat: Option<i64>,
 }
 
 /// Lookups in the Combot Anti-Spam (CAS) database of known spammers.
@@ -164,6 +171,9 @@ impl Default for Settings {
             mention_limit: 0,
             cas: CasConfig::default(),
             delete_service_messages: false,
+            similarity_threshold: 0.5,
+            warn_limit: 3,
+            report_chat: None,
         }
     }
 }
@@ -176,6 +186,11 @@ impl Settings {
             None => true,
             Some(set) => set.contains(&chat_id),
         }
+    }
+
+    /// Where spam reports go: the report chat, else the owner, else nowhere.
+    pub fn report_destination(&self) -> Option<i64> {
+        self.report_chat.or(self.owner_id)
     }
 
     /// Whether `user_id` may see private-chat status output.
@@ -291,6 +306,15 @@ impl Settings {
                 "ANTISPAM_DELETE_SERVICE_MESSAGES",
                 d.delete_service_messages,
             ),
+            similarity_threshold: env::var("ANTISPAM_SIMILARITY_THRESHOLD")
+                .ok()
+                .and_then(|v| v.trim().parse::<f32>().ok())
+                .filter(|t| (0.0..=1.0).contains(t))
+                .unwrap_or(d.similarity_threshold),
+            warn_limit: env_number("ANTISPAM_WARN_LIMIT", d.warn_limit),
+            report_chat: env::var("ANTISPAM_REPORT_CHAT")
+                .ok()
+                .and_then(|v| v.trim().parse::<i64>().ok()),
         }
     }
 }

@@ -32,6 +32,46 @@ impl Sender<'_> {
             Sender::Channel(chat) => chat.id.0,
         }
     }
+
+    /// `@username`, else the full name (user) or title (channel).
+    pub fn display_name(&self) -> String {
+        match self {
+            Sender::User(user) => user.mention().unwrap_or_else(|| user.full_name()),
+            Sender::Channel(chat) => chat
+                .username()
+                .map(|u| format!("@{u}"))
+                .or_else(|| chat.title().map(str::to_owned))
+                .unwrap_or_else(|| chat.id.to_string()),
+        }
+    }
+}
+
+/// The author of a message, or `None` for bots. Posts of the group itself
+/// (anonymous admins, the linked channel) are filtered out by the caller.
+pub fn sender_of(msg: &Message) -> Option<Sender<'_>> {
+    if let Some(chat) = &msg.sender_chat {
+        return Some(Sender::Channel(chat));
+    }
+    let user = msg.from.as_ref()?;
+    (!user.is_bot).then_some(Sender::User(user))
+}
+
+/// Post `text` in `chat` and delete it after `ttl` so the chat stays clean.
+pub async fn send_temporary(bot: &Bot, chat: ChatId, text: String, ttl: Duration) {
+    let sent = match bot.send_message(chat, text).await {
+        Ok(sent) => sent,
+        Err(e) => {
+            tracing::warn!(error = %e, "notice_failed");
+            return;
+        }
+    };
+    let bot = bot.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(ttl).await;
+        if let Err(e) = bot.delete_message(chat, sent.id).await {
+            tracing::debug!(error = %e, "notice_delete_failed");
+        }
+    });
 }
 
 /// Delete `ids` in as few calls as Telegram allows. Already-deleted messages
@@ -127,21 +167,7 @@ async fn notify_flood_mute(
     let length = format_duration(mute_for);
     // Plain text (no parse mode), so user names cannot inject markup.
     let notice = format!("🔇 {who} — мут {length} за флуд · muted {length} for flooding");
-
-    let sent = match bot.send_message(chat, notice).await {
-        Ok(sent) => sent,
-        Err(e) => {
-            tracing::warn!(error = %e, "flood_notice_failed");
-            return;
-        }
-    };
-    let bot = bot.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(ttl).await;
-        if let Err(e) = bot.delete_message(chat, sent.id).await {
-            tracing::debug!(error = %e, "flood_notice_delete_failed");
-        }
-    });
+    send_temporary(bot, chat, notice, ttl).await;
 }
 
 /// Absolute end time of a mute, clamped so Telegram never treats it as permanent.

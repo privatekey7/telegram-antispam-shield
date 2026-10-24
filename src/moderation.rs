@@ -57,6 +57,8 @@ pub enum Reason {
     NewcomerLink,
     /// The sender is listed in the Combot Anti-Spam database.
     KnownSpammer,
+    /// Resembles a message an admin marked with `/spam`.
+    LearnedSpam,
     StopWord,
     BlockedScript,
     /// Nothing but a bot's `@username` (the trigger of business-bot spam).
@@ -72,6 +74,21 @@ pub enum Reason {
 }
 
 impl Reason {
+    /// Verdicts an admin's "not spam" on a similar message may overrule:
+    /// judgement calls, unlike rules people never trip by accident.
+    pub fn is_soft(self) -> bool {
+        matches!(
+            self,
+            Reason::LearnedSpam
+                | Reason::MixedScripts
+                | Reason::TooManyEmoji
+                | Reason::TooManyLinks
+                | Reason::TooManyMentions
+                | Reason::JobOffer
+                | Reason::Model
+        )
+    }
+
     /// Stable name for logs.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -82,6 +99,7 @@ impl Reason {
             Reason::Campaign => "spam_campaign",
             Reason::NewcomerLink => "newcomer_link",
             Reason::KnownSpammer => "cas_banned",
+            Reason::LearnedSpam => "learned_spam",
             Reason::StopWord => "stop_word",
             Reason::BlockedScript => "blocked_script",
             Reason::BotMention => "bot_mention",

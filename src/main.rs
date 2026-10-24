@@ -1,8 +1,9 @@
 //! Telegram anti-spam bot entry point.
 //!
 //! Loads settings, the model and the optional state file, then dispatches
-//! updates to [`bot`]: group messages are checked for flood and spam, member
-//! joins feed the newcomer rule, and private chats get /start and /status.
+//! updates to [`bot`]: group messages are checked for flood and spam (and
+//! admin commands), member joins feed the newcomer rule, report buttons
+//! undo or confirm decisions, and private chats get /start and /status.
 
 mod bot;
 
@@ -59,13 +60,17 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let bot = Bot::new(config::bot_token()?);
-    let state = Arc::new(bot::AppState::new(Shield::new(model, settings, store)));
+    let me = bot.get_me().await?;
+    let username = me.username.clone().unwrap_or_default();
+    let shield = Shield::new(model, settings, store);
+    let state = Arc::new(bot::AppState::new(shield, username));
     bot::spawn_sweeper(Arc::clone(&state));
 
     // The handler tree also tells Telegram which update types to send.
     let handler = dptree::entry()
         .branch(Update::filter_message().endpoint(bot::on_message))
-        .branch(Update::filter_chat_member().endpoint(bot::on_chat_member));
+        .branch(Update::filter_chat_member().endpoint(bot::on_chat_member))
+        .branch(Update::filter_callback_query().endpoint(bot::on_callback));
     let mut dispatcher = Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![state])
         .enable_ctrlc_handler()

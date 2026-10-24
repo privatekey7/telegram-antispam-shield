@@ -2,9 +2,13 @@
 # Roll the bot to a given image tag and roll back if it does not come up.
 #
 # Usage: deploy.sh sha-<40-char commit>
-# CI calls it through an SSH forced command, so the tag arrives in
-# SSH_ORIGINAL_COMMAND; run by hand, pass it as the first argument.
+# Lives next to compose.yaml and .env (docs/auto-deploy.md). CI calls it
+# through an SSH forced command, so the tag arrives in SSH_ORIGINAL_COMMAND;
+# run by hand, pass it as the first argument.
 set -eu
+
+# .env holds BOT_TOKEN: every file written below stays owner-only.
+umask 077
 
 cd "$(dirname "$0")"
 
@@ -26,7 +30,8 @@ up() {
     docker compose up --detach --remove-orphans
 }
 
-# Keep other compose variables (e.g. IMAGE on forks); replace only IMAGE_TAG.
+# Keep the bot settings and other compose variables (e.g. IMAGE on forks);
+# replace only IMAGE_TAG.
 touch .env
 cp .env .env.previous
 grep -v '^IMAGE_TAG=' .env > .env.next || true

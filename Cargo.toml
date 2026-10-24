@@ -29,5 +29,5 @@ chrono = { version = "0.4", default-features = false }
 
 [profile.release]
 # Keep the release build lightweight and reliable on small CI/PaaS builders
-# (aggressive LTO + single codegen unit can OOM on free tiers like Railway).
+# (aggressive LTO + single codegen unit can run out of memory there).
 strip = true

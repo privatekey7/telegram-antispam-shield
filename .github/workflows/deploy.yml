@@ -1,8 +1,9 @@
 name: Deploy
 
 # Builds the image after CI passes on main, pushes it to GHCR tagged by commit
-# SHA, and rolls it out to the VPS (docs/deploy-vps.md). Forks stay inert until
-# they set the repository variable DEPLOY_ENABLED=true.
+# SHA, and rolls it out to your server over SSH (docs/auto-deploy.md). Inert
+# until a repository sets the variable DEPLOY_ENABLED=true. Versioned images
+# for everyone come from release.yml.
 on:
   workflow_run:
     workflows: [CI]
@@ -54,7 +55,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   deploy:
-    name: roll out to VPS
+    name: roll out to server
     needs: image
     runs-on: ubuntu-latest
     environment: production

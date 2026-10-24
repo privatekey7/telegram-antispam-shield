@@ -1,7 +1,7 @@
 //! Runtime settings, read once from environment variables at startup.
 //!
 //! Settings are intentionally separate from logic so behaviour can be tuned on
-//! Railway without rebuilding (see README "Configuration").
+//! any host without rebuilding (see README "Configuration").
 
 use anyhow::{anyhow, Result};
 use std::collections::HashSet;

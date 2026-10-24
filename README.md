@@ -4,10 +4,9 @@
 
 A lightweight Telegram bot that **automatically detects and deletes spam** (in
 Russian and English) using a small built-in machine-learning model. It is fast,
-free to run, and designed so that **anyone can deploy it in ~10 minutes** — no
-coding required.
+free to run, and designed so that **anyone can host it in ~10 minutes** on any
+machine with Docker — a server, a Raspberry Pi, a NAS or a container platform.
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new)
 [![CI](https://github.com/privatekey7/telegram-antispam-shield/actions/workflows/ci.yml/badge.svg)](https://github.com/privatekey7/telegram-antispam-shield/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -20,7 +19,8 @@ coding required.
 - 🌊 **Anti-flood:** stops users who post too fast or repeat the same message —
   deletes the whole burst and mutes them (10 min → 1 h → 1 day for repeat offences).
 - 🇷🇺 🇬🇧 Trained on real Russian + English spam.
-- 🪶 Tiny footprint: runs in a few tens of MB of RAM — fits free hosting tiers.
+- 🪶 Tiny footprint: a few tens of MB of RAM, no open ports, no database.
+- 📦 Prebuilt images for amd64 and arm64 — or let an AI agent install it for you.
 - 🔌 No external AI API, no per-message cost. The model is **built into the bot**.
 - 🛟 Safe by default: admins are never moderated, and a **dry-run mode** lets you
   watch it work before it deletes anything.
@@ -42,37 +42,50 @@ messages** — it's better to miss some spam than to remove a real message.
 
 ---
 
-## 🚀 Deploy in 10 minutes (no coding)
+## 🚀 Install in 10 minutes
 
-You will: (1) create a bot, (2) put this project on Railway, (3) add the bot to
-your group. Follow the steps in order.
+You will: (1) create a bot, (2) start it on a machine of your choice, (3) add
+it to your group. Follow the steps in order.
 
 ### Step 1 — Create your bot and get a token
 
 1. In Telegram, open [@BotFather](https://t.me/BotFather).
 2. Send `/newbot` and follow the prompts (choose a name and a username).
 3. BotFather gives you a **token** that looks like
-   `123456789:AAExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`. **Copy it** — you'll need it.
+   `123456789:AAExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`. **Copy it** and keep it
+   secret — anyone with it controls your bot.
 4. Send `/setprivacy` → pick your bot → choose **Disable**. This lets the bot
    see all group messages so it can check them for spam. *(Important!)*
 
-### Step 2 — Put this bot on Railway
+### Step 2 — Start the bot
 
-1. **Fork** this repository (top-right **Fork** button on GitHub).
-2. Go to [railway.com](https://railway.com) and sign in with GitHub.
-3. Click **New Project** → **Deploy from GitHub repo** → select your fork.
-4. Railway detects the included `Dockerfile` and starts building automatically.
-5. Open the **Variables** tab and add one variable:
-   - Name: `BOT_TOKEN`
-   - Value: the token from Step 1
-6. Railway redeploys. When the **Deploy Logs** show `bot_started`, it's live. 🎉
+**Option A — let an AI agent do it.** Give your coding agent (Claude Code,
+Codex, Cursor…) access to the machine and say:
 
-> 💡 Railway's trial is free but time-limited; after it the service stops
-> unless you pick a paid plan. The bot uses almost no resources.
->
-> 🖥 **Have a VPS already?** Run the bot there for free next to your other
-> services: GitHub builds the image and deploys it on every merge. See
-> [docs/deploy-vps.md](docs/deploy-vps.md).
+> Install the Telegram bot from https://github.com/privatekey7/telegram-antispam-shield
+> by following its llms-install.md.
+
+The agent installs, configures and verifies everything and asks you only for
+the steps in Telegram. Guide: [llms-install.md](llms-install.md).
+
+**Option B — Docker, by hand.** On any always-on machine with Docker:
+
+```bash
+mkdir antispam-shield && cd antispam-shield
+base=https://github.com/privatekey7/telegram-antispam-shield/releases/latest/download
+curl -fsSLO "$base/compose.yaml"
+curl -fsSL "$base/env.example" -o .env && chmod 600 .env
+nano .env                 # set BOT_TOKEN=<token from Step 1>
+docker compose up -d
+docker compose logs -f    # "bot_started" means it's live 🎉
+```
+
+**Other ways:** `docker run`, Railway / Render / Fly.io and other container
+platforms, a build from source with systemd — see
+[docs/hosting.md](docs/hosting.md).
+
+> 🔒 Your token stays on your machine, in `.env` (or in your platform's
+> variables). It is never committed and is not part of the image.
 
 ### Step 3 — Add the bot to your group
 
@@ -85,15 +98,19 @@ your group. Follow the steps in order.
 **Test it:** in the group, send something spammy like
 `ЗАРАБОТОК ОТ 5000$ В ДЕНЬ! Пиши в личку` — it should be deleted within a second.
 
-> 🧪 Want to watch before it deletes? Set `ANTISPAM_DRY_RUN=true` in Railway
-> Variables. The bot will only log what it *would* delete. Set it back to
-> `false` when you're confident.
+> 🧪 Want to watch before it deletes? Set `ANTISPAM_DRY_RUN=true` in `.env`
+> and run `docker compose up -d`. The bot will only log what it *would* delete.
+> Set it back to `false` when you're confident.
+>
+> 🔐 Bot username public? Lock the bot to your group with
+> `ANTISPAM_ALLOWED_CHATS` — [how to find the group ID](docs/hosting.md#restricting-the-bot-to-your-chats).
 
 ---
 
 ## ⚙️ Configuration
 
-All settings are **environment variables** (set them in Railway → Variables).
+All settings are **environment variables**: put them in `.env` next to
+`compose.yaml` (or in your platform's variables), then `docker compose up -d`.
 Only `BOT_TOKEN` is required; everything else has sensible defaults.
 
 | Variable | Default | Description |
@@ -166,6 +183,12 @@ cp .env.example .env   # then put your token in .env
 cargo run
 ```
 
+Releasing: bump `version` in `Cargo.toml`, the `IMAGE_TAG` default in
+`compose.yaml` (on a minor/major bump) and move `Unreleased` in `CHANGELOG.md`
+to the new version; after merging, push the tag `vX.Y.Z`. The Release workflow
+checks they match, publishes the amd64 + arm64 image to GHCR and creates the
+GitHub Release. Auto-deploying your own fork: [docs/auto-deploy.md](docs/auto-deploy.md).
+
 ## 🔁 Retraining the model (optional)
 
 The bot ships with a ready model, so this is only for advanced users.
@@ -189,7 +212,8 @@ and [`mshenoda/spam-messages`](https://huggingface.co/datasets/mshenoda/spam-mes
 | Logs show `delete_failed` | The bot lacks delete rights — fix its admin permissions. |
 | It deleted a legitimate message | Raise `ANTISPAM_THRESHOLD` (e.g. `0.9`) or report the example as an issue. |
 | Want to test safely | Set `ANTISPAM_DRY_RUN=true`. |
-| Build fails on Railway | Make sure you deployed your **fork** unchanged; Railway should use the `Dockerfile`. |
+| `TerminatedByOtherGetUpdates` in logs | Another copy of the bot uses the same token — stop it. Only one copy may run. |
+| Mutes don't work | Grant **Ban users**; mutes need a supergroup. |
 
 ---
 

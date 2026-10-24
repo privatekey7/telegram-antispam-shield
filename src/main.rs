@@ -2,8 +2,9 @@
 //!
 //! Listens for group messages, stops flooders with [`flood::FloodGuard`],
 //! classifies the rest with [`moderation::classify`], and deletes spam
-//! (optionally banning/muting the author). Group admins are exempt by default
-//! and their lists are cached to limit API calls.
+//! (optionally banning/muting the author). Group admins and the group's own
+//! posts (anonymous admins, the linked channel) are exempt; admin lists and
+//! the linked channel are cached to limit API calls.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -11,14 +12,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
 use teloxide::prelude::*;
-use teloxide::types::{ChatId, ChatPermissions, MessageId, User, UserId};
+use teloxide::types::{Chat, ChatId, ChatPermissions, MessageEntityKind, MessageId, User, UserId};
 use tokio::sync::Mutex;
 use tracing_subscriber::EnvFilter;
 
 use telegram_antispam_shield::config::{self, Action, Settings};
 use telegram_antispam_shield::flood::{FloodGuard, FloodReason, FloodVerdict, IncomingMessage};
 use telegram_antispam_shield::model::Model;
-use telegram_antispam_shield::moderation::{classify, Verdict};
+use telegram_antispam_shield::moderation::{classify, MessageFacts, Verdict};
 
 /// Telegram's `deleteMessages` accepts at most this many IDs per call.
 const DELETE_BATCH_LIMIT: usize = 100;
@@ -29,17 +30,41 @@ const MAX_MUTE: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 /// How often idle users are dropped from the flood tracker.
 const FLOOD_SWEEP_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
-/// Per-chat cache of admin user IDs with the time they were fetched.
+/// What the bot remembers about a group between API calls.
+struct ChatInfo {
+    fetched: Instant,
+    admins: HashSet<u64>,
+    /// The channel whose posts are auto-forwarded into this group, if any.
+    linked_channel: Option<i64>,
+}
+
+/// Per-chat cache of [`ChatInfo`], refreshed after `admin_cache_ttl_secs`.
 #[derive(Default)]
-struct AdminCache {
-    map: HashMap<i64, (Instant, HashSet<u64>)>,
+struct ChatCache {
+    map: HashMap<i64, ChatInfo>,
+}
+
+/// Who posted a message: a person, or a channel posting in the group.
+enum Sender<'a> {
+    User(&'a User),
+    Channel(&'a Chat),
+}
+
+impl Sender<'_> {
+    /// Telegram ID of the user or channel.
+    fn id(&self) -> i64 {
+        match self {
+            Sender::User(user) => user.id.0 as i64,
+            Sender::Channel(chat) => chat.id.0,
+        }
+    }
 }
 
 /// Shared application state injected into every handler.
 struct AppState {
     model: Model,
     settings: Settings,
-    admins: Mutex<AdminCache>,
+    chats: Mutex<ChatCache>,
     /// Held only for synchronous checks, never across an `.await`.
     flood: std::sync::Mutex<FloodGuard>,
 }
@@ -73,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
         model,
         flood: std::sync::Mutex::new(FloodGuard::new(settings.flood.clone())),
         settings,
-        admins: Mutex::new(AdminCache::default()),
+        chats: Mutex::new(ChatCache::default()),
     });
     spawn_flood_sweeper(Arc::clone(&state));
 
@@ -146,15 +171,18 @@ async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> ResponseRes
         return Ok(());
     }
 
-    let Some(user) = msg.from.as_ref() else {
-        return Ok(()); // anonymous admin / channel post
-    };
-    if user.is_bot {
+    // The group's own posts: anonymous admins, auto-forwards from the linked
+    // channel and comments made as that channel.
+    if msg.is_automatic_forward() || is_own_post(&bot, &state, &msg).await {
         return Ok(());
     }
-
-    if state.settings.exempt_admins && is_admin(&bot, &state, msg.chat.id, user.id).await {
-        return Ok(());
+    let Some(sender) = sender_of(&msg) else {
+        return Ok(()); // a bot
+    };
+    if let Sender::User(user) = sender {
+        if state.settings.exempt_admins && is_admin(&bot, &state, msg.chat.id, user.id).await {
+            return Ok(());
+        }
     }
 
     let text = msg.text().or_else(|| msg.caption());
@@ -165,7 +193,7 @@ async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> ResponseRes
         message_ids,
         mute_for,
         strike,
-    } = check_flood(&state, &msg, user, text)
+    } = check_flood(&state, &msg, sender.id(), text)
     {
         let flood = FloodAction {
             reason,
@@ -173,22 +201,25 @@ async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> ResponseRes
             mute_for,
             strike,
         };
-        return punish_flood(&bot, &state, msg.chat.id, user, flood).await;
+        return punish_flood(&bot, &state, msg.chat.id, &sender, flood).await;
     }
 
-    let Some(text) = text else {
-        return Ok(());
+    let visible = text.unwrap_or_default();
+    let links = hidden_links(&msg, visible);
+    let facts = MessageFacts {
+        text: visible,
+        hidden_links: &links,
+        inline_keyboard: has_inline_keyboard(&msg),
     };
-
-    let Verdict::Spam { score, reason } = classify(&state.model, &state.settings, text) else {
+    let Verdict::Spam { score, reason } = classify(&state.model, &state.settings, &facts) else {
         return Ok(());
     };
 
     tracing::info!(
         chat = msg.chat.id.0,
-        user = user.id.0,
+        user = sender.id(),
         score = score,
-        reason = reason,
+        reason = reason.as_str(),
         dry_run = state.settings.dry_run,
         "spam_detected"
     );
@@ -201,25 +232,75 @@ async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> ResponseRes
         tracing::warn!(error = %e, "delete_failed (is the bot an admin with delete rights?)");
         return Ok(());
     }
-
-    match state.settings.action {
-        Action::DeleteAndBan => {
-            if let Err(e) = bot.ban_chat_member(msg.chat.id, user.id).await {
-                tracing::warn!(error = %e, "ban_failed");
-            }
-        }
-        Action::DeleteAndMute => {
-            if let Err(e) = bot
-                .restrict_chat_member(msg.chat.id, user.id, ChatPermissions::empty())
-                .await
-            {
-                tracing::warn!(error = %e, "mute_failed");
-            }
-        }
-        Action::DeleteOnly => {}
-    }
-
+    punish_spammer(&bot, state.settings.action, msg.chat.id, &sender).await;
     Ok(())
+}
+
+/// The author of a message, or `None` for bots. Anonymous admins and the
+/// linked channel are filtered out earlier by [`is_own_post`].
+fn sender_of(msg: &Message) -> Option<Sender<'_>> {
+    if let Some(chat) = &msg.sender_chat {
+        return Some(Sender::Channel(chat));
+    }
+    let user = msg.from.as_ref()?;
+    (!user.is_bot).then_some(Sender::User(user))
+}
+
+/// Whether the group itself posted `msg`: as an anonymous admin (the sender
+/// is the group) or as its linked channel.
+async fn is_own_post(bot: &Bot, state: &AppState, msg: &Message) -> bool {
+    let Some(sender_chat) = &msg.sender_chat else {
+        return false;
+    };
+    if sender_chat.id == msg.chat.id {
+        return true;
+    }
+    with_chat_info(bot, state, msg.chat.id, |info| {
+        info.linked_channel == Some(sender_chat.id.0)
+    })
+    .await
+}
+
+/// Targets of links hidden under words; links already visible are skipped.
+fn hidden_links(msg: &Message, visible: &str) -> Vec<String> {
+    msg.entities()
+        .or_else(|| msg.caption_entities())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|entity| match &entity.kind {
+            MessageEntityKind::TextLink { url } => Some(url.as_str()),
+            _ => None,
+        })
+        .filter(|url| !visible.contains(url))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Inline buttons on a message that did not come through an inline bot.
+fn has_inline_keyboard(msg: &Message) -> bool {
+    msg.via_bot.is_none()
+        && msg
+            .reply_markup()
+            .is_some_and(|markup| markup.inline_keyboard.iter().any(|row| !row.is_empty()))
+}
+
+/// Apply the configured action to a spammer. Channels cannot be muted, so
+/// they are banned whenever the action goes beyond deleting.
+async fn punish_spammer(bot: &Bot, action: Action, chat: ChatId, sender: &Sender<'_>) {
+    let result = match (action, sender) {
+        (Action::DeleteOnly, _) => return,
+        (Action::DeleteAndBan, Sender::User(user)) => {
+            bot.ban_chat_member(chat, user.id).await.map(drop)
+        }
+        (Action::DeleteAndMute, Sender::User(user)) => bot
+            .restrict_chat_member(chat, user.id, ChatPermissions::empty())
+            .await
+            .map(drop),
+        (_, Sender::Channel(channel)) => bot.ban_chat_sender_chat(chat, channel.id).await.map(drop),
+    };
+    if let Err(e) = result {
+        tracing::warn!(error = %e, action = ?action, "punish_failed");
+    }
 }
 
 /// What to do with a flooder, as decided by [`FloodGuard::check`].
@@ -230,10 +311,15 @@ struct FloodAction {
     strike: u32,
 }
 
-fn check_flood(state: &AppState, msg: &Message, user: &User, text: Option<&str>) -> FloodVerdict {
+fn check_flood(
+    state: &AppState,
+    msg: &Message,
+    sender_id: i64,
+    text: Option<&str>,
+) -> FloodVerdict {
     let incoming = IncomingMessage {
         chat_id: msg.chat.id.0,
-        user_id: user.id.0,
+        sender_id,
         message_id: msg.id.0,
         text,
         media_group_id: msg.media_group_id().map(|g| g.0.as_str()),
@@ -244,16 +330,17 @@ fn check_flood(state: &AppState, msg: &Message, user: &User, text: Option<&str>)
 }
 
 /// Delete the flood messages, mute the author and optionally tell the chat.
+/// Channels cannot be muted, so their flood is only deleted.
 async fn punish_flood(
     bot: &Bot,
     state: &AppState,
     chat: ChatId,
-    user: &User,
+    sender: &Sender<'_>,
     flood: FloodAction,
 ) -> ResponseResult<()> {
     tracing::info!(
         chat = chat.0,
-        user = user.id.0,
+        user = sender.id(),
         reason = flood.reason.as_str(),
         messages = flood.message_ids.len(),
         mute_secs = flood.mute_for.as_secs(),
@@ -273,6 +360,9 @@ async fn punish_flood(
         }
     }
 
+    let Sender::User(user) = sender else {
+        return Ok(());
+    };
     let muted = bot
         .restrict_chat_member(chat, user.id, ChatPermissions::empty())
         .until_date(mute_until(flood.mute_for))
@@ -359,28 +449,54 @@ fn spawn_flood_sweeper(state: Arc<AppState>) {
 
 /// Returns whether `user` is an administrator of `chat`, using a TTL cache.
 async fn is_admin(bot: &Bot, state: &AppState, chat: ChatId, user: UserId) -> bool {
+    with_chat_info(bot, state, chat, |info| info.admins.contains(&user.0)).await
+}
+
+/// Run `read` on the cached [`ChatInfo`] for `chat`, refreshing it first when
+/// stale. Returns `false` when the info cannot be fetched at all.
+async fn with_chat_info(
+    bot: &Bot,
+    state: &AppState,
+    chat: ChatId,
+    read: impl FnOnce(&ChatInfo) -> bool,
+) -> bool {
     let ttl = Duration::from_secs(state.settings.admin_cache_ttl_secs);
     let now = Instant::now();
-    let mut cache = state.admins.lock().await;
+    let mut cache = state.chats.lock().await;
 
     let fresh = cache
         .map
         .get(&chat.0)
-        .map(|(t, _)| now.duration_since(*t) < ttl)
-        .unwrap_or(false);
-
+        .is_some_and(|info| now.duration_since(info.fetched) < ttl);
     if !fresh {
-        if let Ok(admins) = bot.get_chat_administrators(chat).await {
-            let set: HashSet<u64> = admins.iter().map(|m| m.user.id.0).collect();
-            cache.map.insert(chat.0, (now, set));
+        if let Some(info) = fetch_chat_info(bot, chat, now).await {
+            cache.map.insert(chat.0, info);
         }
     }
+    cache.map.get(&chat.0).is_some_and(read)
+}
 
-    cache
-        .map
-        .get(&chat.0)
-        .map(|(_, s)| s.contains(&user.0))
-        .unwrap_or(false)
+/// Admins and linked channel of `chat`; `None` if the admin list is unavailable.
+async fn fetch_chat_info(bot: &Bot, chat: ChatId, now: Instant) -> Option<ChatInfo> {
+    let admins = match bot.get_chat_administrators(chat).await {
+        Ok(admins) => admins.iter().map(|m| m.user.id.0).collect(),
+        Err(e) => {
+            tracing::warn!(error = %e, chat = chat.0, "admin_list_failed");
+            return None;
+        }
+    };
+    let linked_channel = match bot.get_chat(chat).await {
+        Ok(full) => full.linked_chat_id(),
+        Err(e) => {
+            tracing::warn!(error = %e, chat = chat.0, "chat_info_failed");
+            None
+        }
+    };
+    Some(ChatInfo {
+        fetched: now,
+        admins,
+        linked_channel,
+    })
 }
 
 const START_TEXT: &str = "🛡 Anti-Spam Shield is running.\n\n\

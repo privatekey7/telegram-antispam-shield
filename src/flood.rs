@@ -2,7 +2,7 @@
 //!
 //! The spam classifier looks at one message at a time, so ten identical
 //! harmless messages look like ten harmless messages. [`FloodGuard`] keeps a
-//! short sliding window of recent messages per `(chat, user)` and flags a user
+//! short sliding window of recent messages per `(chat, sender)` and flags a sender
 //! who either posts too fast or repeats the same text. Repeat offenders get
 //! progressively longer mutes.
 //!
@@ -65,7 +65,8 @@ impl Default for FloodConfig {
 #[derive(Clone, Copy, Debug)]
 pub struct IncomingMessage<'a> {
     pub chat_id: i64,
-    pub user_id: u64,
+    /// Telegram user ID, or the chat ID of a channel posting in the group.
+    pub sender_id: i64,
     pub message_id: i32,
     /// Text or caption, if any.
     pub text: Option<&'a str>,
@@ -132,7 +133,7 @@ struct UserState {
 #[derive(Debug)]
 pub struct FloodGuard {
     config: FloodConfig,
-    users: HashMap<(i64, u64), UserState>,
+    users: HashMap<(i64, i64), UserState>,
 }
 
 impl FloodGuard {
@@ -153,7 +154,7 @@ impl FloodGuard {
             return FloodVerdict::Allow;
         }
         let config = &self.config;
-        let state = self.users.entry((msg.chat_id, msg.user_id)).or_default();
+        let state = self.users.entry((msg.chat_id, msg.sender_id)).or_default();
 
         expire_strikes(state, config.strike_reset, now);
         prune_recent(&mut state.recent, history_window(config), now);
@@ -308,12 +309,12 @@ mod tests {
     use super::*;
 
     const CHAT: i64 = -100;
-    const USER: u64 = 42;
+    const USER: i64 = 42;
 
     fn text(message_id: i32, text: &str) -> IncomingMessage<'_> {
         IncomingMessage {
             chat_id: CHAT,
-            user_id: USER,
+            sender_id: USER,
             message_id,
             text: Some(text),
             media_group_id: None,
@@ -492,9 +493,9 @@ mod tests {
         let mut guard = FloodGuard::new(FloodConfig::default());
         let start = Instant::now();
 
-        for (i, user_id) in [1, 2, 3].into_iter().enumerate() {
+        for (i, sender_id) in [1, 2, 3].into_iter().enumerate() {
             let msg = IncomingMessage {
-                user_id,
+                sender_id,
                 ..text(i as i32, "всем привет из чата")
             };
             assert_eq!(guard.check(msg, start), FloodVerdict::Allow);
@@ -526,7 +527,7 @@ mod tests {
         for i in 0..3 {
             guard.check(
                 IncomingMessage {
-                    user_id: 7,
+                    sender_id: 7,
                     ..text(10 + i, "одно и то же")
                 },
                 start,

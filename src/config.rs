@@ -43,6 +43,11 @@ pub struct Settings {
     pub block_invite_links: bool,
     /// Treat job and income offers with pay or "DM me" as spam.
     pub block_job_offers: bool,
+    /// Treat invisible characters inside words (`act\u{200B}ive`) as spam.
+    pub block_hidden_characters: bool,
+    /// Treat inline buttons on a person's message as spam (only automation,
+    /// such as a business bot, can attach them).
+    pub block_inline_keyboards: bool,
     /// Never moderate group administrators.
     pub exempt_admins: bool,
     /// How long to cache a chat's admin list, in seconds.
@@ -56,6 +61,27 @@ pub struct Settings {
     pub owner_id: Option<i64>,
     /// Anti-flood rules (message rate and repeats).
     pub flood: FloodConfig,
+}
+
+impl Default for Settings {
+    /// The documented defaults (see README "Configuration").
+    fn default() -> Self {
+        Settings {
+            action: Action::DeleteOnly,
+            dry_run: false,
+            threshold: None,
+            block_invite_links: true,
+            block_job_offers: true,
+            block_hidden_characters: true,
+            block_inline_keyboards: true,
+            exempt_admins: true,
+            admin_cache_ttl_secs: 3600,
+            allowed_chats: None,
+            leave_unknown_chats: false,
+            owner_id: None,
+            flood: FloodConfig::default(),
+        }
+    }
 }
 
 impl Settings {
@@ -106,22 +132,31 @@ fn env_bool(key: &str, default: bool) -> bool {
 
 impl Settings {
     pub fn from_env() -> Self {
+        let d = Settings::default();
         Settings {
             action: Action::parse(&env::var("ANTISPAM_ACTION").unwrap_or_default()),
-            dry_run: env_bool("ANTISPAM_DRY_RUN", false),
+            dry_run: env_bool("ANTISPAM_DRY_RUN", d.dry_run),
             threshold: env::var("ANTISPAM_THRESHOLD")
                 .ok()
                 .and_then(|v| v.trim().parse::<f32>().ok())
                 .filter(|t| (0.0..=1.0).contains(t)),
-            block_invite_links: env_bool("ANTISPAM_BLOCK_INVITE_LINKS", true),
-            block_job_offers: env_bool("ANTISPAM_BLOCK_JOB_OFFERS", true),
-            exempt_admins: env_bool("ANTISPAM_EXEMPT_ADMINS", true),
+            block_invite_links: env_bool("ANTISPAM_BLOCK_INVITE_LINKS", d.block_invite_links),
+            block_job_offers: env_bool("ANTISPAM_BLOCK_JOB_OFFERS", d.block_job_offers),
+            block_hidden_characters: env_bool(
+                "ANTISPAM_BLOCK_HIDDEN_CHARACTERS",
+                d.block_hidden_characters,
+            ),
+            block_inline_keyboards: env_bool(
+                "ANTISPAM_BLOCK_INLINE_KEYBOARDS",
+                d.block_inline_keyboards,
+            ),
+            exempt_admins: env_bool("ANTISPAM_EXEMPT_ADMINS", d.exempt_admins),
             admin_cache_ttl_secs: env::var("ANTISPAM_ADMIN_CACHE_TTL")
                 .ok()
                 .and_then(|v| v.trim().parse::<u64>().ok())
-                .unwrap_or(3600),
+                .unwrap_or(d.admin_cache_ttl_secs),
             allowed_chats: parse_id_set(env::var("ANTISPAM_ALLOWED_CHATS").ok()),
-            leave_unknown_chats: env_bool("ANTISPAM_LEAVE_UNKNOWN_CHATS", false),
+            leave_unknown_chats: env_bool("ANTISPAM_LEAVE_UNKNOWN_CHATS", d.leave_unknown_chats),
             owner_id: env::var("ANTISPAM_OWNER_ID")
                 .ok()
                 .and_then(|v| v.trim().parse::<i64>().ok()),
@@ -240,10 +275,11 @@ mod tests {
 
     #[test]
     fn chat_allowlist_logic() {
-        let mut s = Settings::from_env();
-
         // No allowlist => every chat allowed.
-        s.allowed_chats = None;
+        let mut s = Settings {
+            allowed_chats: None,
+            ..Settings::default()
+        };
         assert!(s.chat_allowed(-1001234));
 
         // With an allowlist => only listed chats.
@@ -254,10 +290,11 @@ mod tests {
 
     #[test]
     fn owner_logic() {
-        let mut s = Settings::from_env();
-
         // No owner => anyone is "owner" for status.
-        s.owner_id = None;
+        let mut s = Settings {
+            owner_id: None,
+            ..Settings::default()
+        };
         assert!(s.is_owner(777));
 
         // With an owner => only that user.

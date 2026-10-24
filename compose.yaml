@@ -18,6 +18,9 @@ services:
     # Least privilege: the bot needs only outbound HTTPS (api.telegram.org,
     # and api.cas.chat unless ANTISPAM_CAS_ENABLED=false).
     read_only: true
+    # The only writable path besides /data: the heartbeat behind the image's
+    # HEALTHCHECK (`docker compose ps` shows healthy/unhealthy).
+    tmpfs: [/tmp:size=1m]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     # The bot needs ~30 MB; the caps keep it from crowding out other services.

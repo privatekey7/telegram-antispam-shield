@@ -146,6 +146,7 @@ Only `BOT_TOKEN` is required; everything else has sensible defaults.
 | `ANTISPAM_HISTORY_WINDOW_SECS` | `86400` | How long messages and joins are remembered for the rules above. |
 | `ANTISPAM_CLEANUP_ON_BAN` | `true` | When the action is `ban` or `mute`, also delete the spammer's other messages from the history window. |
 | `ANTISPAM_DATA_DIR` | `/data` in Docker | Folder for `antispam.db`, which keeps trusted members across restarts. Unset = memory only. |
+| `ANTISPAM_HEARTBEAT_FILE` | `/tmp/antispam-heartbeat` | Heartbeat behind the image's `HEALTHCHECK` ([docs/hosting.md](docs/hosting.md#health)). |
 | `ANTISPAM_MODEL_MIN_CHARS` | `20` | Messages shorter than this and without links skip the model ("лс", "всем привет" carry too little signal). No recall loss on the test data. |
 | `ANTISPAM_BLOCK_BOT_MENTIONS` | `true` | Treat a message that is only a bot's `@username` (`@gjwgjglkewbot`), the trigger of business-bot spam, as spam. |
 | `ANTISPAM_MIXED_SCRIPT_WORDS` | `2` | Spam when this many words mix Cyrillic and Latin letters (`зaрaботок` with Latin `a`). `0` = off. |

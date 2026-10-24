@@ -19,6 +19,14 @@ use super::AppState;
 
 /// How long a warning notice stays in the chat.
 const WARNING_NOTICE_TTL: Duration = Duration::from_secs(60);
+/// How long a hint about a misused command stays in the chat.
+const HINT_TTL: Duration = Duration::from_secs(20);
+
+const NO_TARGET_HINT: &str = "↩️ Ответьте этой командой на сообщение нарушителя. \
+Сообщения, отправленные до того, как группа стала супергруппой, боту недоступны: \
+удалите их вручную. · Reply to the offending message with this command. Messages \
+from before the group became a supergroup are out of reach: delete them by hand.";
+const BOT_TARGET_HINT: &str = "🤖 Команды не действуют на ботов. · Commands do not apply to bots.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -51,11 +59,16 @@ pub async fn run(bot: &Bot, state: &AppState, msg: &Message, command: Command) {
     // The command itself is noise once handled.
     actions::delete_all(bot, chat, [msg.id.0]).await;
 
+    // Without a hint a misused command just vanishes and the admin is left
+    // guessing. A reply to a message from another chat (including the group
+    // before it became a supergroup) also arrives without a target.
     let Some(target) = msg.reply_to_message() else {
-        return; // nothing to act on
+        actions::send_temporary(bot, chat, NO_TARGET_HINT.to_owned(), HINT_TTL).await;
+        return;
     };
     let Some(sender) = actions::sender_of(target) else {
-        return; // a bot or the group itself
+        actions::send_temporary(bot, chat, BOT_TARGET_HINT.to_owned(), HINT_TTL).await;
+        return;
     };
     let text = target
         .text()

@@ -1685,6 +1685,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "dotenvy",
+ "futures",
  "regex",
  "reqwest",
  "rusqlite",

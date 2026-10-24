@@ -10,6 +10,7 @@ mod bot;
 use std::path::Path;
 use std::sync::Arc;
 
+use teloxide::error_handlers::LoggingErrorHandler;
 use teloxide::prelude::*;
 use tracing_subscriber::EnvFilter;
 
@@ -71,6 +72,7 @@ async fn main() -> anyhow::Result<()> {
         .branch(Update::filter_message().endpoint(bot::on_message))
         .branch(Update::filter_chat_member().endpoint(bot::on_chat_member))
         .branch(Update::filter_callback_query().endpoint(bot::on_callback));
+    let poller = bot::Poller::new(bot.clone()).await;
     let mut dispatcher = Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![state])
         .enable_ctrlc_handler()
@@ -94,7 +96,12 @@ async fn main() -> anyhow::Result<()> {
     });
 
     tracing::info!("bot_started");
-    dispatcher.dispatch().await;
+    dispatcher
+        .dispatch_with_listener(
+            poller,
+            LoggingErrorHandler::with_custom_text("update_listener_error"),
+        )
+        .await;
     tracing::info!("bot_stopped");
     Ok(())
 }

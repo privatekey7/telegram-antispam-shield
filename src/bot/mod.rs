@@ -8,6 +8,7 @@ mod cas;
 mod chats;
 mod commands;
 mod handlers;
+mod polling;
 mod reports;
 
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -18,6 +19,7 @@ use telegram_antispam_shield::flood::FloodGuard;
 use telegram_antispam_shield::shield::Shield;
 
 pub use handlers::{on_chat_member, on_message};
+pub use polling::Poller;
 pub use reports::on_callback;
 
 /// How often expired flood and history entries are dropped.

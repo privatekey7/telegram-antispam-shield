@@ -193,7 +193,9 @@ Reply to a message in the group with:
 | `/warn` | Deletes the message and warns the author (a notice for a minute). `ANTISPAM_WARN_LIMIT` warnings in a month mean a ban. |
 
 Commands work for group admins, anonymous admins and `ANTISPAM_OWNER_ID`,
-also in dry-run mode. The command message itself is deleted.
+also in dry-run mode. The command message itself is deleted. A command that
+is not a reply, or replies to a message out of reach (such as one sent before
+the group became a supergroup), gets a 20-second hint instead.
 
 **Reports.** Set `ANTISPAM_OWNER_ID` (or `ANTISPAM_REPORT_CHAT`) and every
 automatic deletion is reported with the reason, the sender and the text:

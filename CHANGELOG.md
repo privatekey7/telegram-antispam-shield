@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Messages that reply to a text message from another chat lost their text in
+  teloxide and were neither moderated nor read as commands. This includes
+  replies to messages from before the group became a supergroup. The bot now
+  polls Telegram itself and repairs such updates before parsing them (ADR
+  0010). Any text that is still lost is logged as `unreadable_message`.
+- `/spam`, `/ban` and `/warn` without a reply, or replying to a message out of
+  reach, no longer vanish silently: the bot shows a short hint.
+
 ## [0.2.0] - 2026-10-24
 
 ### Added

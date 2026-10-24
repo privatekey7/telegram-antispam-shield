@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-24
+
 ### Added
 - Admin commands, as a reply to a message (ADR 0009): `/spam` deletes it and
   the author's recent messages, bans the author and learns the text, so
@@ -140,4 +142,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-stage, non-root Dockerfile and Railway deploy config.
 - GitHub Actions CI: rustfmt, clippy, tests, `cargo audit`, gitleaks.
 
+[Unreleased]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/privatekey7/telegram-antispam-shield/releases/tag/v0.1.0

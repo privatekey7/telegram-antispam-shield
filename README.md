@@ -18,6 +18,8 @@ machine with Docker — a server, a Raspberry Pi, a NAS or a container platform.
 - 🗑 **Deletes** spam automatically (and can optionally **ban** or **mute** the sender).
 - 🌊 **Anti-flood:** stops users who post too fast or repeat the same message —
   deletes the whole burst and mutes them (10 min → 1 h → 1 day for repeat offences).
+- 💼 **Job offers are spam:** "remote work, 300$ a day, DM me" is removed by
+  default — real chats don't recruit in the open.
 - 🇷🇺 🇬🇧 Trained on real Russian + English spam.
 - 🪶 Tiny footprint: a few tens of MB of RAM, no open ports, no database.
 - 📦 Prebuilt images for amd64 and arm64 — or let an AI agent install it for you.
@@ -120,6 +122,7 @@ Only `BOT_TOKEN` is required; everything else has sensible defaults.
 | `ANTISPAM_DRY_RUN` | `false` | If `true`, only log detections — never delete. |
 | `ANTISPAM_THRESHOLD` | *(model default ≈ 0.82)* | Spam probability cutoff `0.0–1.0`. Higher = stricter (fewer deletions). |
 | `ANTISPAM_BLOCK_INVITE_LINKS` | `true` | Treat `t.me/+…` / `joinchat` links as spam. |
+| `ANTISPAM_BLOCK_JOB_OFFERS` | `true` | Treat job and income offers (remote work, side income, "earn $X a day") as spam when they mention pay or ask to DM. Talking about work is fine. |
 | `ANTISPAM_EXEMPT_ADMINS` | `true` | Never moderate group admins. |
 | `ANTISPAM_ADMIN_CACHE_TTL` | `3600` | Seconds to cache each group's admin list. |
 | `ANTISPAM_ALLOWED_CHATS` | _(all chats)_ | Comma-separated chat IDs the bot is allowed to moderate. When set, every other chat is ignored. **Recommended if your bot's username is public**, so strangers can't add it and use your hosting. |
@@ -148,7 +151,7 @@ Incoming message
    │
    ├─ 0. Anti-flood  → too many messages / same text repeated?    → delete burst + mute
    │
-   ├─ 1. Heuristics  → invite links etc. (instant, high precision) → spam → delete
+   ├─ 1. Heuristics  → invite links, job offers (instant, high precision) → spam → delete
    │
    ├─ 2. ML model    → spam probability ≥ threshold?              → spam → delete
    │

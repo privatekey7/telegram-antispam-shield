@@ -18,10 +18,17 @@ pub enum Verdict {
 /// Heuristics run first (fast, high precision). If none fire, the ML model
 /// decides using the effective threshold.
 pub fn classify(model: &Model, settings: &Settings, text: &str) -> Verdict {
-    if settings.block_invite_links {
-        if let Some(reason) = heuristics::hard_rule(text) {
-            return Verdict::Spam { score: 1.0, reason };
-        }
+    if settings.block_invite_links && heuristics::is_invite_link(text) {
+        return Verdict::Spam {
+            score: 1.0,
+            reason: "telegram_invite_link",
+        };
+    }
+    if settings.block_job_offers && heuristics::is_job_offer(text) {
+        return Verdict::Spam {
+            score: 1.0,
+            reason: "job_offer",
+        };
     }
 
     let (is_spam, score) = model.is_spam(text, settings.threshold);
@@ -46,6 +53,7 @@ mod tests {
             dry_run: false,
             threshold: None,
             block_invite_links: true,
+            block_job_offers: true,
             exempt_admins: true,
             admin_cache_ttl_secs: 3600,
             allowed_chats: None,
@@ -79,5 +87,32 @@ mod tests {
             Verdict::Spam { reason, .. } => assert_eq!(reason, "telegram_invite_link"),
             Verdict::Allow => panic!("invite link should be spam"),
         }
+    }
+
+    #[test]
+    fn job_offer_is_flagged_by_heuristic() {
+        let model = Model::load_default().unwrap();
+        let offer = "Looking for people for remote work, 300$ per day, PM me";
+        match classify(&model, &settings(), offer) {
+            Verdict::Spam { reason, .. } => assert_eq!(reason, "job_offer"),
+            Verdict::Allow => panic!("job offer should be spam"),
+        }
+    }
+
+    #[test]
+    fn job_offer_rule_can_be_disabled() {
+        let model = Model::load_default().unwrap();
+        let s = Settings {
+            block_job_offers: false,
+            ..settings()
+        };
+        let offer = "Удалённая работа для всех, пишите в лс";
+        assert!(!matches!(
+            classify(&model, &s, offer),
+            Verdict::Spam {
+                reason: "job_offer",
+                ..
+            }
+        ));
     }
 }

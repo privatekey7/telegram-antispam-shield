@@ -41,6 +41,8 @@ pub struct Settings {
     pub threshold: Option<f32>,
     /// Treat Telegram invite links as spam (high-precision rule).
     pub block_invite_links: bool,
+    /// Treat job and income offers with pay or "DM me" as spam.
+    pub block_job_offers: bool,
     /// Never moderate group administrators.
     pub exempt_admins: bool,
     /// How long to cache a chat's admin list, in seconds.
@@ -112,6 +114,7 @@ impl Settings {
                 .and_then(|v| v.trim().parse::<f32>().ok())
                 .filter(|t| (0.0..=1.0).contains(t)),
             block_invite_links: env_bool("ANTISPAM_BLOCK_INVITE_LINKS", true),
+            block_job_offers: env_bool("ANTISPAM_BLOCK_JOB_OFFERS", true),
             exempt_admins: env_bool("ANTISPAM_EXEMPT_ADMINS", true),
             admin_cache_ttl_secs: env::var("ANTISPAM_ADMIN_CACHE_TTL")
                 .ok()

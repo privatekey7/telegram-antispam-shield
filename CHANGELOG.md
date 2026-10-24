@@ -49,6 +49,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   into `.env`, which got around the SSH forced command. A failed pull or
   start now rolls back instead of leaving `.env` on the new tag.
   `deploy/test-deploy.sh` covers both.
+- Admin commands and report buttons now check the admin's rights (ADR 0003
+  addendum). `/spam`, `/ban`, the **Ban** button and **Not spam** need the
+  **Ban users** right (`can_restrict_members`); `/warn` needs it too while
+  warnings can end in a ban, otherwise **Delete messages**. Before, any admin,
+  even one with only a title, could make the bot ban.
+- Anonymous admins (writing as the group) can no longer use commands, because
+  their rights cannot be checked. They get a hint instead.
+- The bot confirms an admin's rights with Telegram before acting, so a
+  demoted admin loses access at once instead of after the admin cache TTL.
+- `ANTISPAM_ALLOWED_CHATS` or `ANTISPAM_OWNER_ID` with an entry that is not a
+  number now stops the bot at startup. Before, a typo such as `@mygroup`
+  silently allowed every chat.
+- Without `ANTISPAM_OWNER_ID`, `/status` no longer shows the configuration to
+  anyone; it only says that the bot is running.
+- Each chat sends at most 20 spam reports per 10 minutes, so one chat cannot
+  flood the owner or push other reports out of storage.
+- The bot warns at startup when `ANTISPAM_ALLOWED_CHATS` or
+  `ANTISPAM_OWNER_ID` is unset, and the docs now strongly recommend the
+  allowlist.
 
 ## [0.2.0] - 2026-10-24
 

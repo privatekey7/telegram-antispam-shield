@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- `deploy.sh` checks the whole image tag instead of line by line: a tag with
+  a newline (`sha-<sha>\nIMAGE=...`) passed the check and wrote extra lines
+  into `.env`, which got around the SSH forced command. A failed pull or
+  start now rolls back instead of leaving `.env` on the new tag.
+  `deploy/test-deploy.sh` covers both.
+
 ## [0.2.0] - 2026-10-24
 
 ### Added

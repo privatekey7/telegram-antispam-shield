@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Hidden-character rule (`ANTISPAM_BLOCK_HIDDEN_CHARACTERS`, on): an
+  invisible character between two letters (`act​ive`) marks spam. The
+  classifier now also sees text with invisible characters removed.
+- Inline-keyboard rule (`ANTISPAM_BLOCK_INLINE_KEYBOARDS`, on): buttons on a
+  member's message, which only automation such as a business bot can attach,
+  mark spam. Messages sent via inline bots are not affected.
+- Links hidden under text (`text_link` entities) are passed to the rules and
+  the model, so a hidden `t.me/+…` invite is caught.
 - Job-offer rule (`ANTISPAM_BLOCK_JOB_OFFERS`, on by default): Russian and
   English offers of remote work, side jobs or income are deleted as spam when
   they also mention money or ask to move to private messages. Plain talk about
@@ -67,6 +75,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `railway.json` stays for people who use it).
 
 ### Fixed
+- Auto-forwarded posts of the group's linked channel and comments made as
+  that channel are no longer moderated. Telegram sends them from a non-admin
+  service account, so the model could delete the channel's own posts.
+- Messages sent on behalf of another channel are moderated. They arrive from
+  `@Channel_Bot`, which is marked as a bot, so they used to be skipped.
+  Spamming channels are banned with `banChatSenderChat` when the action is
+  ban or mute.
 - The bot now compiles on non-Unix hosts (local development on Windows); the
   SIGTERM handler is Unix-only.
 

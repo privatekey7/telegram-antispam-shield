@@ -6,6 +6,7 @@
 //! * [`features`]   — text -> hashed feature buckets (mirrors the trainer).
 //! * [`model`]      — loads the linear model and scores text.
 //! * [`heuristics`] — fast, high-precision regex rules.
+//! * [`text`]       — text clean-up (invisible characters).
 //! * [`moderation`] — combines heuristics + model into a [`moderation::Verdict`].
 //! * [`flood`]      — per-user message rate and repeat detection.
 //! * [`config`]     — runtime settings read from environment variables.
@@ -16,3 +17,4 @@ pub mod flood;
 pub mod heuristics;
 pub mod model;
 pub mod moderation;
+pub mod text;

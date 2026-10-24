@@ -20,6 +20,9 @@ machine with Docker — a server, a Raspberry Pi, a NAS or a container platform.
   deletes the whole burst and mutes them (10 min → 1 h → 1 day for repeat offences).
 - 💼 **Job offers are spam:** "remote work, 300$ a day, DM me" is removed by
   default — real chats don't recruit in the open.
+- 🕵️ **Sees through tricks:** invisible characters inside words, links hidden
+  under text, inline buttons that only automation can attach, and spam posted
+  on behalf of a channel.
 - 🇷🇺 🇬🇧 Trained on real Russian + English spam.
 - 🪶 Tiny footprint: a few tens of MB of RAM, no open ports, no database.
 - 📦 Prebuilt images for amd64 and arm64 — or let an AI agent install it for you.
@@ -122,8 +125,10 @@ Only `BOT_TOKEN` is required; everything else has sensible defaults.
 | `ANTISPAM_DRY_RUN` | `false` | If `true`, only log detections — never delete. |
 | `ANTISPAM_THRESHOLD` | *(model default ≈ 0.82)* | Spam probability cutoff `0.0–1.0`. Higher = stricter (fewer deletions). |
 | `ANTISPAM_BLOCK_INVITE_LINKS` | `true` | Treat `t.me/+…` / `joinchat` links as spam. |
+| `ANTISPAM_BLOCK_HIDDEN_CHARACTERS` | `true` | Treat invisible characters inside words (`act​ive`) as spam. People don't type them; filter dodgers do. |
+| `ANTISPAM_BLOCK_INLINE_KEYBOARDS` | `true` | Treat inline buttons on a member's message as spam. A person can't attach buttons; only automation such as a business bot can (messages sent via inline bots are not affected). |
 | `ANTISPAM_BLOCK_JOB_OFFERS` | `true` | Treat job and income offers (remote work, side income, "earn $X a day") as spam when they mention pay or ask to DM. Talking about work is fine. |
-| `ANTISPAM_EXEMPT_ADMINS` | `true` | Never moderate group admins. |
+| `ANTISPAM_EXEMPT_ADMINS` | `true` | Never moderate group admins. Posts of the group itself (anonymous admins, the linked channel) are always exempt. |
 | `ANTISPAM_ADMIN_CACHE_TTL` | `3600` | Seconds to cache each group's admin list. |
 | `ANTISPAM_ALLOWED_CHATS` | _(all chats)_ | Comma-separated chat IDs the bot is allowed to moderate. When set, every other chat is ignored. **Recommended if your bot's username is public**, so strangers can't add it and use your hosting. |
 | `ANTISPAM_LEAVE_UNKNOWN_CHATS` | `false` | When `true`, the bot leaves any chat not in `ANTISPAM_ALLOWED_CHATS` instead of just ignoring it. |
@@ -151,13 +156,16 @@ Incoming message
    │
    ├─ 0. Anti-flood  → too many messages / same text repeated?    → delete burst + mute
    │
-   ├─ 1. Heuristics  → invite links, job offers (instant, high precision) → spam → delete
+   ├─ 1. Heuristics  → buttons, hidden characters, invite links, job offers → spam → delete
    │
    ├─ 2. ML model    → spam probability ≥ threshold?              → spam → delete
    │
    └─ otherwise: allow
 ```
 
+- **What the rules see:** text or caption with invisible characters removed
+  (`src/text.rs`), plus the targets of links hidden under words, so a
+  `t.me/+…` invite behind innocent text is still caught.
 - **Anti-flood** (`src/flood.rs`) keeps a short in-memory window of each user's
   recent messages per chat. It sees every message type, including stickers and
   media. Offence counters live in memory and reset when the bot restarts.

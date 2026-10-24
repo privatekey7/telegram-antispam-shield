@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-25
+
+### Upgrade notes
+- The database schema moves to version 3 (per-chat samples). v0.2.0 cannot
+  run on it: back up `antispam.db` before upgrading, and restore that copy
+  to roll back (ADR 0011). Samples learned before the upgrade are set aside
+  and no longer applied.
+- Startup now fails if `ANTISPAM_ALLOWED_CHATS` or `ANTISPAM_OWNER_ID`
+  contains an entry that is not a number.
+
 ### Fixed
 - Messages that reply to a text message from another chat lost their text in
   teloxide and were neither moderated nor read as commands. This includes
@@ -90,6 +100,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs no longer put the bot token in browser URLs or curl arguments, no
   longer suggest sending it to the assistant, and use `restrict` in the deploy
   key's `authorized_keys` line.
+- Once the total sample budget (5,000 per kind) is full, the chat that adds
+  a sample drops its own oldest, so other chats can no longer shrink a
+  chat's samples. Only a chat's first sample is taken from the largest chat.
+- Every `getUpdates` carries the allowed-updates list. Before, a failed
+  first call after an upgrade left edited messages unmoderated until the
+  next restart.
+- After a 429 only one handler waits, for at most 5 s; other calls give up
+  at once, so a raid in one chat cannot stall moderation in all of them.
+- Each schema migration commits together with its version, so a crash
+  midway no longer leaves a half-built database.
 
 ## [0.2.0] - 2026-10-24
 
@@ -227,6 +247,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-stage, non-root Dockerfile and Railway deploy config.
 - GitHub Actions CI: rustfmt, clippy, tests, `cargo audit`, gitleaks.
 
-[Unreleased]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/privatekey7/telegram-antispam-shield/releases/tag/v0.1.0

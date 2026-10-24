@@ -103,7 +103,7 @@ impl Shield {
         &self.settings
     }
 
-    /// Number of spam samples learned from admins.
+    /// Number of spam samples learned from admins, in all chats.
     pub fn learned_spam(&self) -> usize {
         self.samples.spam_count()
     }
@@ -115,13 +115,14 @@ impl Shield {
             .history
             .record(msg.chat, msg.sender, msg.message_id, text, now);
         let standing = self.standing(msg.chat, msg.sender, now);
-        let vouched = text.is_some_and(|t| self.samples.resembles_ham(t));
+        let vouched = text.is_some_and(|t| self.samples.resembles_ham(msg.chat, t));
 
         let known_spammer = (msg.known_spammer && !standing.trusted)
             .then(|| spam(Reason::KnownSpammer, Vec::new()));
-        let learned =
-            (!standing.trusted && !vouched && text.is_some_and(|t| self.samples.resembles_spam(t)))
-                .then(|| spam(Reason::LearnedSpam, Vec::new()));
+        let learned = (!standing.trusted
+            && !vouched
+            && text.is_some_and(|t| self.samples.resembles_spam(msg.chat, t)))
+        .then(|| spam(Reason::LearnedSpam, Vec::new()));
         let mut decision = known_spammer
             .or_else(|| self.history_rule(msg.chat, &echoes, standing))
             .or(learned)
@@ -149,17 +150,17 @@ impl Shield {
         self.trust.is_trusted(chat, sender)
     }
 
-    /// An admin marked `text` from `sender` as spam (`/spam`): learn it and
-    /// withdraw the sender's trust.
+    /// An admin marked `text` from `sender` as spam (`/spam`): learn it for
+    /// `chat` and withdraw the sender's trust.
     pub fn learn_spam(&mut self, chat: i64, sender: i64, text: &str) {
-        self.samples.learn(SampleKind::Spam, text);
+        self.samples.learn(chat, SampleKind::Spam, text);
         self.trust.revoke(chat, sender);
     }
 
-    /// An admin said `text` from `sender` is not spam: learn it as such,
-    /// trust the sender and drop their warnings.
+    /// An admin said `text` from `sender` is not spam: learn it as such for
+    /// `chat`, trust the sender and drop their warnings.
     pub fn vouch(&mut self, chat: i64, sender: i64, text: &str) {
-        self.samples.learn(SampleKind::Ham, text);
+        self.samples.learn(chat, SampleKind::Ham, text);
         self.trust.approve(chat, sender);
         self.warnings.clear(chat, sender);
     }
@@ -413,6 +414,21 @@ mod tests {
             reason(&shield.inspect(&msg(2, 1, reworded), now)),
             Some(Reason::LearnedSpam)
         );
+    }
+
+    #[test]
+    fn a_spam_command_in_one_chat_does_not_reach_another() {
+        let mut shield = shield();
+        let now = Instant::now();
+        let other = Incoming {
+            chat: CHAT - 1,
+            ..msg(2, 1, PROMO)
+        };
+
+        shield.learn_spam(CHAT, 1, PROMO);
+        let decision = shield.inspect(&other, now);
+
+        assert_ne!(reason(&decision), Some(Reason::LearnedSpam));
     }
 
     #[test]

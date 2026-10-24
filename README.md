@@ -205,7 +205,9 @@ automatic deletion is reported with the reason, the sender and the text:
 - **🚫 Ban** (when the action only deletes) — bans, cleans up and learns the
   text as spam.
 
-Learned samples, warnings and reports live in `antispam.db` next to trust.
+Learned samples work only in the chat where they were taught, at most 1,000
+per kind and chat. They live in `antispam.db` next to trust, warnings and
+reports.
 
 ---
 

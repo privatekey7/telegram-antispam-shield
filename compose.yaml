@@ -4,7 +4,7 @@
 #   docker compose up -d
 #
 # Bot settings (BOT_TOKEN, ANTISPAM_*) live in `.env` next to this file, which
-# is never committed. The same `.env` may set IMAGE / IMAGE_TAG to run another
+# is never committed. Trusted members survive restarts in the `data` volume. The same `.env` may set IMAGE / IMAGE_TAG to run another
 # image or version; deploy/deploy.sh writes IMAGE_TAG there.
 name: antispam-shield
 
@@ -13,6 +13,8 @@ services:
     image: ${IMAGE:-ghcr.io/privatekey7/telegram-antispam-shield}:${IMAGE_TAG:-0.2}
     restart: unless-stopped
     env_file: .env
+    volumes:
+      - data:/data
     # Least privilege: the bot needs only outbound HTTPS to api.telegram.org.
     read_only: true
     cap_drop: [ALL]
@@ -25,3 +27,6 @@ services:
       options:
         max-size: 10m
         max-file: "3"
+
+volumes:
+  data:

@@ -169,13 +169,14 @@ docker compose ps
 docker compose logs --tail 50 bot
 ```
 
-**Check:** the container is `running` and the logs contain `model_loaded` and
-`bot_started`, with no `ERROR` lines.
+**Check:** the container is `running` and the logs contain `model_loaded`
+(with `persistent=true`) and `bot_started`, with no `ERROR` lines.
 
 | Log line | Fix |
 |---|---|
 | `TerminatedByOtherGetUpdates` / conflict | Another copy uses this token. Stop it. |
 | `BOT_TOKEN is required` / `Unauthorized`, container restarting | Fix `BOT_TOKEN` in `.env`, then `docker compose up -d`. |
+| `store_unavailable` | The bot runs, but trusted members reset on restart. Check that `compose.yaml` mounts the `data` volume at `/data`. |
 | `pull access denied` / `manifest unknown` | Check internet access to `ghcr.io`; check `uname -m` is supported. |
 
 ## Step 10 — 👤 Smoke test

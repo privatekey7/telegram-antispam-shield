@@ -36,9 +36,19 @@ audit (2026-10-24, findings H1 and H2) showed two problems with that.
   again. The store keeps the sorted word list as the text, with
   `UNIQUE (chat_id, kind, text)` as a second guard.
 - **Counts.** At most 1,000 samples per chat and kind; the chat's oldest go
-  first. At most 5,000 per kind in total; when full, the oldest sample of the
-  chat holding the most goes, so a few large or hostile chats cannot push out
-  a small chat's samples while they hold more.
+  first. At most 5,000 per kind in total; when full, the chat that adds a
+  sample drops its own oldest. Only a chat's very first sample is taken from
+  the chat holding the most, so a new chat can still learn. An attacker with
+  many groups thus costs a victim one sample per group, not one per `/spam`.
+  (The first version always took from the largest chat; the re-audit showed
+  50 hostile groups shrinking a 600-sample chat to 98.)
+- **Migrations are atomic.** Each migration commits together with its
+  `user_version`, so a crash midway leaves the previous schema intact.
+- **No rollback to 0.2.x.** v0.2.0 cannot run on a migrated database: it
+  would read per-chat samples as global ones, and its inserts fail on the
+  new `chat_id NOT NULL` column. Back up `antispam.db` before upgrading
+  (`docker run --rm -v antispam-shield_data:/data -v "$PWD":/backup alpine
+  cp /data/antispam.db /backup/`). To go back, restore that copy.
 - **Budget.** Worst case 2 kinds × 5,000 × ~1.1 KB ≈ 11 MB in memory. A
   message is compared with at most 1,000 samples of each kind: about half a
   million integer comparisons, around a millisecond.

@@ -28,9 +28,9 @@ const MAX_CHARS: usize = 800;
 pub const MAX_WORDS: usize = 128;
 /// Samples kept per chat and kind; the chat's oldest are dropped first.
 pub const MAX_SAMPLES_PER_CHAT: usize = 1000;
-/// Samples kept per kind across all chats. When full, the oldest sample of
-/// the chat holding the most is dropped, so a few busy (or hostile) chats
-/// cannot push out a small chat's samples while they hold more.
+/// Samples kept per kind across all chats. When full, the chat that adds one
+/// drops its own oldest; only its first sample is taken from the chat holding
+/// the most, so other chats cannot shrink a chat's samples.
 ///
 /// Worst case: 2 kinds × 5,000 × ~1.1 KB ≈ 11 MB, well inside the
 /// container's 128 MB. A message is compared with at most 1,000 samples of
@@ -206,18 +206,29 @@ impl Samples {
         if list.len() > MAX_SAMPLES_PER_CHAT {
             dropped.extend(list.pop_front());
         }
-        while self.count(kind) > MAX_SAMPLES_TOTAL {
-            let largest = self
-                .lists
-                .iter()
-                .filter(|((_, k), _)| *k == kind)
-                .max_by_key(|(_, list)| list.len())
-                .map(|(key, _)| *key);
-            let Some(key) = largest else { break };
-            let list = self.lists.get_mut(&key).expect("key was just found");
-            dropped.extend(list.pop_front());
-            if list.is_empty() {
-                self.lists.remove(&key);
+        if self.count(kind) > MAX_SAMPLES_TOTAL {
+            // The chat that overflows the total pays with its own oldest
+            // sample, so no chat can push out another chat's samples: without
+            // an allowlist anyone can add the bot to groups of their own. Only
+            // a chat learning its very first sample takes one from the
+            // largest chat, so a new chat can still learn; an attacker gets
+            // one such eviction per group, not one per `/spam`.
+            let own = (chat, kind);
+            let key = if self.lists.get(&own).is_some_and(|l| l.len() > 1) {
+                Some(own)
+            } else {
+                self.lists
+                    .iter()
+                    .filter(|((_, k), _)| *k == kind)
+                    .max_by_key(|(_, list)| list.len())
+                    .map(|(key, _)| *key)
+            };
+            if let Some(key) = key {
+                let list = self.lists.get_mut(&key).expect("key was just found");
+                dropped.extend(list.pop_front());
+                if list.is_empty() {
+                    self.lists.remove(&key);
+                }
             }
         }
         self.forget(dropped.into_iter().map(|s| s.id));
@@ -359,6 +370,35 @@ mod tests {
 
         assert_eq!(samples.spam_count(), MAX_SAMPLES_TOTAL);
         assert!(samples.resembles_spam(CHAT, PROMO));
+    }
+
+    #[test]
+    fn other_chats_cannot_shrink_a_chat_once_the_total_is_full() {
+        // Arrange: our chat holds 600 samples, hostile chats fill the rest.
+        let mut samples = Samples::new(0.5, None);
+        for i in 0..600 {
+            samples.learn(CHAT, SampleKind::Spam, &distinct(i));
+        }
+        let hostile = |n: usize| 1_000 + n as i64;
+        let filler = (MAX_SAMPLES_TOTAL - 600) / 100;
+        for n in 0..filler {
+            for i in 0..100 {
+                samples.learn(hostile(n), SampleKind::Spam, &distinct(i));
+            }
+        }
+        assert_eq!(samples.spam_count(), MAX_SAMPLES_TOTAL);
+
+        // Act: six more hostile chats with 100 `/spam` each (the audit's attack).
+        for n in filler..filler + 6 {
+            for i in 0..100 {
+                samples.learn(hostile(n), SampleKind::Spam, &distinct(i));
+            }
+        }
+
+        // Assert: one eviction per new chat, not one per sample.
+        let ours = samples.lists[&(CHAT, SampleKind::Spam)].len();
+        assert_eq!(ours, 600 - 6);
+        assert_eq!(samples.spam_count(), MAX_SAMPLES_TOTAL);
     }
 
     #[test]

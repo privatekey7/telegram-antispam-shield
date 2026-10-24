@@ -50,8 +50,13 @@ Alternatives we rejected:
 ## Consequences
 
 - Messages that reply to other chats are moderated like any other message.
-- The dropped `external_reply` is not visible to `ANTISPAM_BLOCK_FORWARDS`
-  for text quotes; media quotes still are.
+- The poller remembers which messages lost an `external_reply` (a bounded
+  set), so `ANTISPAM_BLOCK_FORWARDS` still sees text quotes. The quoted text
+  itself is not moderated.
+- Every `getUpdates` carries the allowed-updates list, not only the first:
+  Telegram keeps the old subscription until a call with the new one
+  succeeds, so a failed first call after an upgrade would leave new update
+  types (`edited_message`) off until the next restart.
 - The test `teloxide_alone_loses_the_text` fails once teloxide fixes the bug
   upstream. That is the signal to delete the repair and return to
   `Dispatcher::dispatch`.

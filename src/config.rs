@@ -205,8 +205,8 @@ impl Settings {
         if self.allowed_chats.is_none() {
             warnings.push(
                 "ANTISPAM_ALLOWED_CHATS is not set: anyone can add the bot to a group, \
-                 use your hosting, send you reports and teach the bot's shared spam \
-                 samples. Set it to your group IDs.",
+                 use your hosting, send you reports and fill the bot's total sample \
+                 budget. Set it to your group IDs.",
             );
         }
         if self.owner_id.is_none() {

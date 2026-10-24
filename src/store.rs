@@ -270,11 +270,20 @@ impl Store {
 }
 
 fn migrate(conn: &Connection) -> Result<()> {
+    apply_migrations(conn, MIGRATIONS)
+}
+
+/// Each migration and its version bump commit together, so a crash midway
+/// leaves the previous version intact instead of a half-built schema that
+/// fails on every start.
+fn apply_migrations(conn: &Connection, migrations: &[&str]) -> Result<()> {
     let applied: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    for (version, sql) in (1..).zip(MIGRATIONS).skip(applied.max(0) as usize) {
-        conn.execute_batch(sql)
+    for (version, sql) in (1..).zip(migrations).skip(applied.max(0) as usize) {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(sql)
             .with_context(|| format!("migration {version} failed"))?;
-        conn.pragma_update(None, "user_version", version)?;
+        tx.pragma_update(None, "user_version", version)?;
+        tx.commit()?;
     }
     Ok(())
 }
@@ -323,6 +332,34 @@ mod tests {
             }]
         );
         assert_eq!(store.samples(SampleKind::Ham).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_failed_migration_leaves_the_previous_version() {
+        // Arrange: the second migration breaks halfway through.
+        let conn = Connection::open_in_memory().unwrap();
+        let migrations = [
+            "CREATE TABLE a (x);",
+            "CREATE TABLE b (x); CREATE TABLE a (y);",
+        ];
+
+        // Act
+        let result = apply_migrations(&conn, &migrations);
+
+        // Assert
+        assert!(result.is_err());
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        let b_exists: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name = 'b'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, 1);
+        assert_eq!(b_exists, 0, "the half-applied migration was rolled back");
     }
 
     #[test]

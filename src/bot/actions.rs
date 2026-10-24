@@ -1,6 +1,7 @@
 //! Carrying out decisions: deleting, banning, muting and flood notices.
 
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
@@ -21,8 +22,13 @@ const DELETE_BATCH_LIMIT: usize = 100;
 const MIN_MUTE: Duration = Duration::from_secs(31);
 const MAX_MUTE: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 /// Longest `retry_after` from Telegram that is waited out once. Longer waits
-/// mean the bot is far over its limits; the action is logged as failed.
-const MAX_RETRY_WAIT: Duration = Duration::from_secs(30);
+/// mean the bot is far over its limits; the action is logged as failed. Kept
+/// short: the wait blocks the chat's handler, and once that chat's queue of
+/// 64 updates is full, teloxide's whole dispatcher. It also has to fit in
+/// the 10 s `docker stop` grants for a graceful shutdown.
+const MAX_RETRY_WAIT: Duration = Duration::from_secs(5);
+/// Shared by every handler: one rate-limit wait at a time.
+static RETRY_GATE: RetryGate = RetryGate::new();
 /// Longest name repeated in a group notice, in characters.
 const NOTICE_NAME_CHARS: usize = 32;
 
@@ -159,8 +165,16 @@ pub async fn punish_spammer(bot: &Bot, action: Action, chat: ChatId, sender: &Se
 /// Run `call`, and once more after the wait Telegram asks for when it
 /// answers 429 Too Many Requests. During a raid deletes and bans would
 /// otherwise be lost silently. Waits longer than [`MAX_RETRY_WAIT`] are not
-/// retried.
-pub async fn retry_once<T, F, Fut>(mut call: F) -> Result<T, RequestError>
+/// retried, and only one call waits at a time (see [`RetryGate`]).
+pub async fn retry_once<T, F, Fut>(call: F) -> Result<T, RequestError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, RequestError>>,
+{
+    retry_once_with(&RETRY_GATE, call).await
+}
+
+async fn retry_once_with<T, F, Fut>(gate: &RetryGate, mut call: F) -> Result<T, RequestError>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, RequestError>>,
@@ -168,6 +182,10 @@ where
     match call().await {
         Err(e) => match e.retry_after().map(|s| s.duration()) {
             Some(wait) if wait <= MAX_RETRY_WAIT => {
+                let Some(_waiting) = gate.enter() else {
+                    tracing::info!(wait_secs = wait.as_secs(), "rate_limited_giving_up");
+                    return Err(e);
+                };
                 tracing::info!(wait_secs = wait.as_secs(), "rate_limited_retrying");
                 tokio::time::sleep(wait).await;
                 call().await
@@ -175,6 +193,38 @@ where
             _ => Err(e),
         },
         ok => ok,
+    }
+}
+
+/// Lets one handler at a time wait out a rate limit. While it waits, other
+/// calls that hit 429 give up at once instead of piling up sleeping handlers:
+/// a raid in one chat must not stall moderation in every other chat.
+struct RetryGate {
+    busy: AtomicBool,
+}
+
+impl RetryGate {
+    const fn new() -> RetryGate {
+        RetryGate {
+            busy: AtomicBool::new(false),
+        }
+    }
+
+    /// The right to wait, released when the guard drops (also when the
+    /// handler is cancelled mid-wait).
+    fn enter(&self) -> Option<RetryGuard<'_>> {
+        self.busy
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| RetryGuard(self))
+    }
+}
+
+struct RetryGuard<'a>(&'a RetryGate);
+
+impl Drop for RetryGuard<'_> {
+    fn drop(&mut self) {
+        self.0.busy.store(false, Ordering::Release);
     }
 }
 
@@ -299,8 +349,9 @@ mod tests {
 
     #[tokio::test]
     async fn rate_limited_call_is_retried_once() {
+        let gate = RetryGate::new();
         let mut calls = 0;
-        let result = retry_once(|| {
+        let result = retry_once_with(&gate, || {
             calls += 1;
             let call = calls;
             async move {
@@ -318,8 +369,9 @@ mod tests {
 
     #[tokio::test]
     async fn long_or_repeated_limits_give_up() {
+        let gate = RetryGate::new();
         let mut calls = 0;
-        let long = retry_once(|| {
+        let long = retry_once_with(&gate, || {
             calls += 1;
             async { Err::<(), _>(rate_limited(3600)) }
         })
@@ -328,13 +380,34 @@ mod tests {
         assert_eq!(calls, 1, "an hour-long wait is not waited out");
 
         let mut calls = 0;
-        let repeated = retry_once(|| {
+        let repeated = retry_once_with(&gate, || {
             calls += 1;
             async { Err::<(), _>(rate_limited(0)) }
         })
         .await;
         assert!(repeated.is_err());
         assert_eq!(calls, 2, "only one retry");
+    }
+
+    #[tokio::test]
+    async fn only_one_call_waits_out_a_limit() {
+        // Arrange
+        let gate = RetryGate::new();
+        let waiting = gate.enter().expect("the gate starts free");
+        let mut calls = 0;
+
+        // Act
+        let while_busy = retry_once_with(&gate, || {
+            calls += 1;
+            async { Err::<(), _>(rate_limited(1)) }
+        })
+        .await;
+        drop(waiting);
+
+        // Assert
+        assert!(while_busy.is_err());
+        assert_eq!(calls, 1, "gives up at once instead of sleeping too");
+        assert!(gate.enter().is_some(), "freed when the waiter is done");
     }
 
     #[test]

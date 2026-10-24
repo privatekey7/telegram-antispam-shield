@@ -86,7 +86,10 @@ pub struct Poller {
     bot: Bot,
     /// The next update to ask for; confirms everything before it.
     offset: i32,
-    /// Sent with the first call only; Telegram remembers it.
+    /// Sent with every call, not just the first: Telegram keeps the previous
+    /// subscription until a call carrying the new one succeeds, so a failed
+    /// first call after an upgrade would otherwise leave new update types
+    /// (such as `edited_message`) switched off until the next restart.
     allowed_updates: Option<Vec<AllowedUpdate>>,
     token: StopToken,
     flag: StopFlag,
@@ -110,13 +113,16 @@ impl Poller {
     }
 
     fn fetch(&mut self, timeout: u32, limit: Option<u8>) -> GetRawUpdatesRequest {
-        let payload = GetRawUpdates {
+        JsonRequest::new(self.bot.clone(), self.payload(timeout, limit)).send()
+    }
+
+    fn payload(&self, timeout: u32, limit: Option<u8>) -> GetRawUpdates {
+        GetRawUpdates {
             offset: self.offset,
             timeout,
             limit,
-            allowed_updates: self.allowed_updates.take(),
-        };
-        JsonRequest::new(self.bot.clone(), payload).send()
+            allowed_updates: self.allowed_updates.clone(),
+        }
     }
 
     /// Parse a batch, moving the offset past every update in it, readable or not.
@@ -150,7 +156,9 @@ impl UpdateListener for Poller {
     }
 
     fn hint_allowed_updates(&mut self, hint: &mut dyn Iterator<Item = AllowedUpdate>) {
-        self.allowed_updates = Some(hint.collect());
+        let allowed: Vec<AllowedUpdate> = hint.collect();
+        tracing::info!(updates = ?allowed, "subscribed_updates");
+        self.allowed_updates = Some(allowed);
     }
 }
 
@@ -366,15 +374,39 @@ mod tests {
         assert!(!quoted_another_chat(-1004302764108, 30), "teloxide sees it");
     }
 
-    #[test]
-    fn offset_moves_past_every_update() {
-        let mut poller = Poller {
+    fn poller() -> Poller {
+        Poller {
             bot: Bot::new("1:test"),
             offset: 0,
             allowed_updates: None,
             token: mk_stop_token().0,
             flag: mk_stop_token().1,
-        };
+        }
+    }
+
+    #[test]
+    fn every_call_carries_the_subscription() {
+        // Arrange
+        let mut poller = poller();
+        poller.hint_allowed_updates(
+            &mut [AllowedUpdate::Message, AllowedUpdate::EditedMessage].into_iter(),
+        );
+
+        // Act: as if the first call failed and the loop asked again.
+        let first = poller.payload(POLL_TIMEOUT_SECS, None);
+        let retry = poller.payload(POLL_TIMEOUT_SECS, None);
+
+        // Assert
+        assert_eq!(first.allowed_updates, retry.allowed_updates);
+        assert_eq!(
+            retry.allowed_updates,
+            Some(vec![AllowedUpdate::Message, AllowedUpdate::EditedMessage])
+        );
+    }
+
+    #[test]
+    fn offset_moves_past_every_update() {
+        let mut poller = poller();
 
         let updates = poller.accept(vec![
             command_replying_elsewhere(),

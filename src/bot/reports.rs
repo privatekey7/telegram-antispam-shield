@@ -12,9 +12,10 @@
 //! Only the owner or an admin of the reported chat with the "Ban users" right
 //! may press them: both buttons ban or unban.
 //!
-//! Reports come only from allowed chats, and each chat gets at most
-//! [`REPORTS_PER_WINDOW`] reports per [`REPORT_WINDOW`], so one noisy (or
-//! hostile) chat cannot flood the owner or push other reports out of storage.
+//! Reports come only from chats that pass `ANTISPAM_ALLOWED_CHATS` (every
+//! chat when it is unset), and each chat gets at most [`REPORTS_PER_WINDOW`]
+//! reports per [`REPORT_WINDOW`], so one noisy (or hostile) chat cannot flood
+//! the owner. Many chats still can; only the allowlist stops that.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};

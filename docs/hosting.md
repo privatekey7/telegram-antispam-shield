@@ -146,8 +146,10 @@ Changing the code and want every merge to go live on your server? See
 ## Restricting the bot to your chats
 
 Every bot's username is public, so anyone can add your bot to their group,
-use your server, send you spam reports and, as an admin there, feed the bot's
-learned samples with `/spam`. Set `ANTISPAM_ALLOWED_CHATS` to your group
+use your server and send you spam reports (at most 20 per chat per 10
+minutes, but from any number of chats). Learned samples stay in the chat that
+taught them, so `/spam` in a foreign group does not change what is deleted in
+yours. Set `ANTISPAM_ALLOWED_CHATS` to your group
 ID(s); the bot warns at startup while it is unset, and refuses to start if an
 entry is not a number:
 

@@ -88,9 +88,11 @@ storage. So:
   start instead of silently allowing every chat.
 - **`/status` without an owner** shows nobody the configuration; it only says
   that the bot is running.
-- **Reports** come only from allowed chats, at most 20 per chat per 10
-  minutes, and stay plain text (no parse mode), since titles and texts from
-  foreign chats are untrusted.
+- **Reports** come only from chats that pass the allowlist (every chat while
+  it is unset), at most 20 per chat per 10 minutes, and stay plain text (no
+  parse mode), since titles and texts from foreign chats are untrusted. The
+  limit is per chat: many hostile chats can still flood the owner and push
+  stored reports out. Only the allowlist stops that.
 - **An unset allowlist stays the default**, now with a startup warning, and
   the README, `.env.example` and hosting guides strongly recommend setting it.
   Failing closed on an empty allowlist would be safer, but it would stop every

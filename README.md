@@ -120,8 +120,8 @@ platforms, a build from source with systemd — see
 > 🔐 Lock the bot to your groups with `ANTISPAM_ALLOWED_CHATS` —
 > [how to find the group ID](docs/hosting.md#restricting-the-bot-to-your-chats).
 > Every bot's username is public: without the list anyone can add the bot to
-> their group, use your server, send you reports and, as an admin there, use
-> `/spam` to feed the bot's learned samples.
+> their group, use your server and send you reports from any number of
+> chats.
 
 ---
 

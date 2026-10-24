@@ -13,7 +13,8 @@
 
 use teloxide::prelude::*;
 use teloxide::types::{
-    CallbackQuery, ChatId, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, UserId,
+    CallbackQuery, ChatId, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup,
+    LinkPreviewOptions, UserId,
 };
 
 use telegram_antispam_shield::config::Action;
@@ -25,6 +26,11 @@ use super::{chats, AppState};
 
 /// Text kept from the reported message (the report must stay readable).
 const REPORT_TEXT_CHARS: usize = 800;
+/// Names and chat titles in a report are cut to this many characters.
+const REPORT_NAME_CHARS: usize = 64;
+/// Prefix of every line of the reported text, so text from the sender can
+/// never pass for the bot's own words.
+const QUOTE_PREFIX: &str = "│ ";
 
 /// What happened to one spam message, for the report.
 pub struct Incident<'a> {
@@ -54,23 +60,24 @@ pub async fn send(bot: &Bot, state: &AppState, incident: Incident<'_>) {
         Action::DeleteAndBan => "удалено, бан · deleted, banned",
         Action::DeleteAndMute => "удалено, мут · deleted, muted",
     };
-    let chat_name = incident
-        .chat
-        .title()
-        .map_or_else(|| incident.chat.id.to_string(), str::to_owned);
+    let chat_name = shorten(incident.chat.title().unwrap_or_default());
     // Plain text (no parse mode), so names and spam cannot inject markup.
+    // Everything the bot did not write itself is marked: the chat title and
+    // the sender's name in «», the message line by line behind a bar.
     let body = format!(
         "🛡 Спам · Spam\n\
-         Чат · Chat: {chat_name}\n\
-         Автор · Sender: {} (id {})\n\
+         Чат · Chat: «{chat_name}» (id {})\n\
+         Автор · Sender: «{}» (id {})\n\
          Причина · Reason: {} ({:.2})\n\
          Итог · Outcome: {outcome}, {} msg\n\
-         ———\n{text}",
-        incident.sender.display_name(),
+         Текст отправителя, не бота · Sender's text, not the bot's:\n{}",
+        incident.chat.id,
+        shorten(&incident.sender.display_name()),
         incident.sender.id(),
         incident.reason.as_str(),
         incident.score,
         incident.deleted,
+        quote(&text),
     );
 
     let mut row = vec![InlineKeyboardButton::callback(
@@ -85,6 +92,7 @@ pub async fn send(bot: &Bot, state: &AppState, incident: Incident<'_>) {
     }
     let sent = bot
         .send_message(ChatId(destination), body)
+        .link_preview_options(no_preview())
         .reply_markup(InlineKeyboardMarkup::new([row]))
         .await;
     if let Err(e) = sent {
@@ -155,12 +163,42 @@ pub async fn on_callback(
         let text = format!("{}\n\n{verdict} — {by}", message.text().unwrap_or_default());
         if let Err(e) = bot
             .edit_message_text(message.chat.id, message.id, text)
+            .link_preview_options(no_preview())
             .await
         {
             tracing::debug!(error = %e, "report_edit_failed");
         }
     }
     Ok(())
+}
+
+/// `raw` on one line, cut to [`REPORT_NAME_CHARS`].
+fn shorten(raw: &str) -> String {
+    let line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() <= REPORT_NAME_CHARS {
+        return line;
+    }
+    let short: String = line.chars().take(REPORT_NAME_CHARS - 1).collect();
+    format!("{short}…")
+}
+
+/// Every line of `text` behind [`QUOTE_PREFIX`].
+fn quote(text: &str) -> String {
+    text.lines()
+        .map(|line| format!("{QUOTE_PREFIX}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Reports quote spam, often with links: never fetch a preview for them.
+fn no_preview() -> LinkPreviewOptions {
+    LinkPreviewOptions {
+        is_disabled: true,
+        url: None,
+        prefer_small_media: false,
+        prefer_large_media: false,
+        show_above_text: false,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -214,11 +252,11 @@ async fn pardon(bot: &Bot, state: &AppState, chat: ChatId, sender_id: i64) {
 
 async fn ban(bot: &Bot, chat: ChatId, sender_id: i64) {
     let result = if is_channel(sender_id) {
-        bot.ban_chat_sender_chat(chat, ChatId(sender_id))
+        actions::retry_once(|| bot.ban_chat_sender_chat(chat, ChatId(sender_id)).send())
             .await
             .map(drop)
     } else {
-        bot.ban_chat_member(chat, UserId(sender_id as u64))
+        actions::retry_once(|| bot.ban_chat_member(chat, UserId(sender_id as u64)).send())
             .await
             .map(drop)
     };
@@ -237,6 +275,22 @@ mod tests {
         assert_eq!(parse_callback("ban:7"), Some((Verb::Ban, 7)));
         assert_eq!(parse_callback("ham:x"), None);
         assert_eq!(parse_callback("other:1"), None);
+    }
+
+    #[test]
+    fn foreign_text_is_quoted_line_by_line() {
+        assert_eq!(
+            quote("buy now\n✅ Не спам\n\nt.me/x"),
+            "│ buy now\n│ ✅ Не спам\n│ \n│ t.me/x"
+        );
+    }
+
+    #[test]
+    fn names_are_one_short_line() {
+        assert_eq!(shorten("Group\nname "), "Group name");
+        let long = shorten(&"я".repeat(200));
+        assert_eq!(long.chars().count(), REPORT_NAME_CHARS);
+        assert!(long.ends_with('…'));
     }
 
     #[test]

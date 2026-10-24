@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Admin commands, as a reply to a message (ADR 0009): `/spam` deletes it and
+  the author's recent messages, bans the author and learns the text, so
+  similar messages are deleted automatically (cosine of word sets,
+  `ANTISPAM_SIMILARITY_THRESHOLD=0.5`: 92% of a real chat's spam matched,
+  none of 10,490 normal messages); `/ban`; `/warn` with a ban after
+  `ANTISPAM_WARN_LIMIT` (3) warnings in a month.
+- Spam reports to `ANTISPAM_REPORT_CHAT` or the owner, with **Not spam**
+  (unban/unmute, trust, learn as fine) and **Ban** buttons. Learned samples,
+  warnings and reports are stored in `antispam.db`.
 - Shape checks for untrusted members, after tg-spam's meta checks, with
   defaults measured on public datasets and a replayed real chat:
   `@somebot`-only triggers (`ANTISPAM_BLOCK_BOT_MENTIONS`, on), words mixing

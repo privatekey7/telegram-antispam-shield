@@ -1,26 +1,52 @@
 //! Durable state in a small SQLite file (see ADR 0007).
 //!
 //! The bot works without it: with no data directory, state lives in memory
-//! and resets on restart. With one, trusted members survive restarts, so a
-//! redeploy does not put every regular back under the spam model.
+//! and resets on restart. With one, trusted members, learned samples,
+//! warnings and spam reports survive restarts.
+//!
+//! [`Store`] is a cheap, cloneable handle; every component that persists
+//! something keeps its own clone.
 
 use std::path::Path;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 /// File name inside the data directory.
 pub const DB_FILE: &str = "antispam.db";
 
 /// Schema migrations, applied in order; `PRAGMA user_version` counts them.
-const MIGRATIONS: &[&str] = &["CREATE TABLE members (
+const MIGRATIONS: &[&str] = &[
+    "CREATE TABLE members (
         chat_id        INTEGER NOT NULL,
         user_id        INTEGER NOT NULL,
         clean_messages INTEGER NOT NULL DEFAULT 0,
         trusted        INTEGER NOT NULL DEFAULT 0,
         updated_at     INTEGER NOT NULL DEFAULT (unixepoch()),
         PRIMARY KEY (chat_id, user_id)
-    ) WITHOUT ROWID;"];
+    ) WITHOUT ROWID;",
+    "CREATE TABLE samples (
+        id         INTEGER PRIMARY KEY,
+        kind       TEXT    NOT NULL CHECK (kind IN ('spam', 'ham')),
+        text       TEXT    NOT NULL,
+        added_at   INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE TABLE warnings (
+        chat_id    INTEGER NOT NULL,
+        user_id    INTEGER NOT NULL,
+        count      INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (chat_id, user_id)
+    ) WITHOUT ROWID;
+    CREATE TABLE reports (
+        id         INTEGER PRIMARY KEY,
+        chat_id    INTEGER NOT NULL,
+        sender_id  INTEGER NOT NULL,
+        text       TEXT    NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );",
+];
 
 /// One member's standing in one chat.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -29,9 +55,42 @@ pub struct MemberRecord {
     pub trusted: bool,
 }
 
+/// Kind of a learned sample.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SampleKind {
+    Spam,
+    Ham,
+}
+
+impl SampleKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            SampleKind::Spam => "spam",
+            SampleKind::Ham => "ham",
+        }
+    }
+}
+
+/// Admin warnings for one member: how many, and when the last one was given
+/// (Unix seconds).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WarningRecord {
+    pub count: u32,
+    pub updated_at: i64,
+}
+
+/// What a spam report remembers, so its buttons work after a restart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReportRecord {
+    pub chat_id: i64,
+    pub sender_id: i64,
+    pub text: String,
+}
+
 /// Handle to the SQLite database.
+#[derive(Clone)]
 pub struct Store {
-    conn: Connection,
+    conn: Arc<Mutex<Connection>>,
 }
 
 impl Store {
@@ -51,29 +110,23 @@ impl Store {
     }
 
     fn with_connection(conn: Connection) -> Result<Store> {
-        let store = Store { conn };
-        store.migrate()?;
-        Ok(store)
+        migrate(&conn)?;
+        Ok(Store {
+            conn: Arc::new(Mutex::new(conn)),
+        })
     }
 
-    fn migrate(&self) -> Result<()> {
-        let applied: i64 = self
-            .conn
-            .pragma_query_value(None, "user_version", |row| row.get(0))?;
-        for (version, sql) in (1..).zip(MIGRATIONS).skip(applied.max(0) as usize) {
-            self.conn
-                .execute_batch(sql)
-                .with_context(|| format!("migration {version} failed"))?;
-            self.conn.pragma_update(None, "user_version", version)?;
-        }
-        Ok(())
+    /// The connection. A poisoned lock only means another thread panicked
+    /// mid-call; SQLite itself is still consistent.
+    fn conn(&self) -> MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Every stored member, keyed by `(chat_id, user_id)`.
     pub fn members(&self) -> Result<Vec<((i64, i64), MemberRecord)>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT chat_id, user_id, clean_messages, trusted FROM members")?;
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT chat_id, user_id, clean_messages, trusted FROM members")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 (row.get(0)?, row.get(1)?),
@@ -88,7 +141,7 @@ impl Store {
 
     /// Insert or replace one member's record.
     pub fn save_member(&self, chat_id: i64, user_id: i64, record: MemberRecord) -> Result<()> {
-        self.conn.execute(
+        self.conn().execute(
             "INSERT INTO members (chat_id, user_id, clean_messages, trusted, updated_at)
              VALUES (?1, ?2, ?3, ?4, unixepoch())
              ON CONFLICT (chat_id, user_id) DO UPDATE SET
@@ -99,6 +152,99 @@ impl Store {
         )?;
         Ok(())
     }
+
+    /// Learned samples of `kind`, oldest first.
+    pub fn samples(&self, kind: SampleKind) -> Result<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT text FROM samples WHERE kind = ?1 ORDER BY id")?;
+        let rows = stmt.query_map([kind.as_str()], |row| row.get(0))?;
+        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+
+    /// Add a sample and keep at most `keep` of its kind (oldest go first).
+    pub fn add_sample(&self, kind: SampleKind, text: &str, keep: usize) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO samples (kind, text) VALUES (?1, ?2)",
+            params![kind.as_str(), text],
+        )?;
+        conn.execute(
+            "DELETE FROM samples WHERE kind = ?1 AND id NOT IN
+                 (SELECT id FROM samples WHERE kind = ?1 ORDER BY id DESC LIMIT ?2)",
+            params![kind.as_str(), keep as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Every stored warning record, keyed by `(chat_id, user_id)`.
+    pub fn warnings(&self) -> Result<Vec<((i64, i64), WarningRecord)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT chat_id, user_id, count, updated_at FROM warnings")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                (row.get(0)?, row.get(1)?),
+                WarningRecord {
+                    count: row.get(2)?,
+                    updated_at: row.get(3)?,
+                },
+            ))
+        })?;
+        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+
+    /// Insert or replace one member's warnings.
+    pub fn save_warning(&self, chat_id: i64, user_id: i64, record: WarningRecord) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO warnings (chat_id, user_id, count, updated_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (chat_id, user_id) DO UPDATE SET
+                 count = excluded.count, updated_at = excluded.updated_at",
+            params![chat_id, user_id, record.count, record.updated_at],
+        )?;
+        Ok(())
+    }
+
+    /// Save a report and return its ID; only the newest `keep` are kept.
+    pub fn add_report(&self, report: &ReportRecord, keep: usize) -> Result<i64> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO reports (chat_id, sender_id, text) VALUES (?1, ?2, ?3)",
+            params![report.chat_id, report.sender_id, report.text],
+        )?;
+        let id = conn.last_insert_rowid();
+        conn.execute(
+            "DELETE FROM reports WHERE id <= ?1",
+            params![id - keep as i64],
+        )?;
+        Ok(id)
+    }
+
+    /// The report with `id`, if it is still kept.
+    pub fn report(&self, id: i64) -> Result<Option<ReportRecord>> {
+        self.conn()
+            .query_row(
+                "SELECT chat_id, sender_id, text FROM reports WHERE id = ?1",
+                [id],
+                |row| {
+                    Ok(ReportRecord {
+                        chat_id: row.get(0)?,
+                        sender_id: row.get(1)?,
+                        text: row.get(2)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+}
+
+fn migrate(conn: &Connection) -> Result<()> {
+    let applied: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    for (version, sql) in (1..).zip(MIGRATIONS).skip(applied.max(0) as usize) {
+        conn.execute_batch(sql)
+            .with_context(|| format!("migration {version} failed"))?;
+        conn.pragma_update(None, "user_version", version)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -108,34 +254,59 @@ mod tests {
     #[test]
     fn members_round_trip() {
         let store = Store::in_memory().unwrap();
-        let record = MemberRecord {
+        let first = MemberRecord {
             clean_messages: 2,
             trusted: false,
         };
+        let second = MemberRecord {
+            clean_messages: 3,
+            trusted: true,
+        };
 
-        store.save_member(-100, 42, record).unwrap();
-        store
-            .save_member(
-                -100,
-                42,
-                MemberRecord {
-                    clean_messages: 3,
-                    trusted: true,
-                },
-            )
-            .unwrap();
+        store.save_member(-100, 42, first).unwrap();
+        store.save_member(-100, 42, second).unwrap();
 
-        let members = store.members().unwrap();
-        assert_eq!(
-            members,
-            vec![(
-                (-100, 42),
-                MemberRecord {
-                    clean_messages: 3,
-                    trusted: true
-                }
-            )]
-        );
+        assert_eq!(store.members().unwrap(), vec![((-100, 42), second)]);
+    }
+
+    #[test]
+    fn samples_are_capped_per_kind() {
+        let store = Store::in_memory().unwrap();
+        for text in ["a", "b", "c"] {
+            store.add_sample(SampleKind::Spam, text, 2).unwrap();
+        }
+        store.add_sample(SampleKind::Ham, "h", 2).unwrap();
+
+        assert_eq!(store.samples(SampleKind::Spam).unwrap(), vec!["b", "c"]);
+        assert_eq!(store.samples(SampleKind::Ham).unwrap(), vec!["h"]);
+    }
+
+    #[test]
+    fn warnings_round_trip() {
+        let store = Store::in_memory().unwrap();
+        let record = WarningRecord {
+            count: 2,
+            updated_at: 1_700_000_000,
+        };
+        store.save_warning(-1, 5, record).unwrap();
+        assert_eq!(store.warnings().unwrap(), vec![((-1, 5), record)]);
+    }
+
+    #[test]
+    fn old_reports_are_dropped() {
+        let store = Store::in_memory().unwrap();
+        let report = |text: &str| ReportRecord {
+            chat_id: -1,
+            sender_id: 7,
+            text: text.to_string(),
+        };
+        let first = store.add_report(&report("one"), 2).unwrap();
+        let second = store.add_report(&report("two"), 2).unwrap();
+        let third = store.add_report(&report("three"), 2).unwrap();
+
+        assert_eq!(store.report(first).unwrap(), None);
+        assert_eq!(store.report(second).unwrap(), Some(report("two")));
+        assert_eq!(store.report(third).unwrap(), Some(report("three")));
     }
 
     #[test]
@@ -144,16 +315,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         {
             let store = Store::open(&dir).unwrap();
-            store
-                .save_member(
-                    1,
-                    2,
-                    MemberRecord {
-                        clean_messages: 1,
-                        trusted: false,
-                    },
-                )
-                .unwrap();
+            store.save_member(1, 2, MemberRecord::default()).unwrap();
         }
         let store = Store::open(&dir).unwrap();
         assert_eq!(store.members().unwrap().len(), 1);

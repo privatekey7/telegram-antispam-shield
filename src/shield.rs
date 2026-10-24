@@ -1,19 +1,28 @@
-//! The decision engine: history and trust around the classifier.
+//! The decision engine: history, trust and learned samples around the
+//! classifier.
 //!
 //! [`Shield::inspect`] is the whole spam decision for one message, minus
 //! Telegram I/O, so it can be tested and replayed against real chat
 //! exports. The bot binary turns updates into [`Incoming`] messages and
-//! carries out the [`Decision`].
+//! carries out the [`Decision`]. Admin feedback (`/spam`, "not spam",
+//! `/warn`) flows back in through [`Shield::learn_spam`], [`Shield::vouch`]
+//! and [`Shield::warn`].
 
+use std::collections::VecDeque;
 use std::time::Instant;
 
 use crate::config::Settings;
 use crate::history::{Echoes, History};
 use crate::model::Model;
 use crate::moderation::{classify, MessageFacts, Reason, Standing, Verdict};
-use crate::store::Store;
+use crate::samples::Samples;
+use crate::store::{ReportRecord, SampleKind, Store};
 use crate::text;
 use crate::trust::Trust;
+use crate::warnings::Warnings;
+
+/// Spam reports kept for their buttons.
+const MAX_REPORTS: usize = 1000;
 
 /// One group message, reduced to what the engine needs.
 #[derive(Clone, Copy, Debug)]
@@ -49,20 +58,38 @@ impl Decision {
     }
 }
 
+/// Spam reports, in the store or (without one) in memory.
+struct Reports {
+    store: Option<Store>,
+    memory: VecDeque<(i64, ReportRecord)>,
+    next_id: i64,
+}
+
 /// Model, settings and per-chat memory.
 pub struct Shield {
     model: Model,
     settings: Settings,
     trust: Trust,
     history: History,
+    samples: Samples,
+    warnings: Warnings,
+    reports: Reports,
 }
 
 impl Shield {
-    /// An engine; `store` makes trust durable (see ADR 0007).
+    /// An engine; `store` makes trust, samples, warnings and reports durable
+    /// (see ADR 0007).
     pub fn new(model: Model, settings: Settings, store: Option<Store>) -> Shield {
         Shield {
-            trust: Trust::new(settings.trust.clone(), store),
+            trust: Trust::new(settings.trust.clone(), store.clone()),
             history: History::new(settings.history_window),
+            samples: Samples::new(settings.similarity_threshold, store.clone()),
+            warnings: Warnings::new(store.clone()),
+            reports: Reports {
+                store,
+                memory: VecDeque::new(),
+                next_id: 1,
+            },
             model,
             settings,
         }
@@ -76,6 +103,11 @@ impl Shield {
         &self.settings
     }
 
+    /// Number of spam samples learned from admins.
+    pub fn learned_spam(&self) -> usize {
+        self.samples.spam_count()
+    }
+
     /// Decide about `msg` and update history and trust.
     pub fn inspect(&mut self, msg: &Incoming<'_>, now: Instant) -> Decision {
         let text = Some(msg.facts.text).filter(|t| !t.trim().is_empty());
@@ -83,16 +115,25 @@ impl Shield {
             .history
             .record(msg.chat, msg.sender, msg.message_id, text, now);
         let standing = self.standing(msg.chat, msg.sender, now);
+        let vouched = text.is_some_and(|t| self.samples.resembles_ham(t));
 
         let known_spammer = (msg.known_spammer && !standing.trusted)
             .then(|| spam(Reason::KnownSpammer, Vec::new()));
-        let decision = known_spammer
+        let learned =
+            (!standing.trusted && !vouched && text.is_some_and(|t| self.samples.resembles_spam(t)))
+                .then(|| spam(Reason::LearnedSpam, Vec::new()));
+        let mut decision = known_spammer
             .or_else(|| self.history_rule(msg.chat, &echoes, standing))
+            .or(learned)
             .unwrap_or_else(|| Decision {
                 verdict: classify(&self.model, &self.settings, &msg.facts, standing),
                 also_delete: Vec::new(),
                 newly_trusted: false,
             });
+        // An admin said a message like this is fine: judgement calls yield.
+        if vouched && matches!(decision.verdict, Verdict::Spam { reason, .. } if reason.is_soft()) {
+            decision.verdict = Verdict::Allow;
+        }
 
         if matches!(decision.verdict, Verdict::Spam { .. }) {
             self.trust.revoke(msg.chat, msg.sender);
@@ -106,6 +147,66 @@ impl Shield {
     /// up in external spam databases).
     pub fn is_trusted(&self, chat: i64, sender: i64) -> bool {
         self.trust.is_trusted(chat, sender)
+    }
+
+    /// An admin marked `text` from `sender` as spam (`/spam`): learn it and
+    /// withdraw the sender's trust.
+    pub fn learn_spam(&mut self, chat: i64, sender: i64, text: &str) {
+        self.samples.learn(SampleKind::Spam, text);
+        self.trust.revoke(chat, sender);
+    }
+
+    /// An admin said `text` from `sender` is not spam: learn it as such,
+    /// trust the sender and drop their warnings.
+    pub fn vouch(&mut self, chat: i64, sender: i64, text: &str) {
+        self.samples.learn(SampleKind::Ham, text);
+        self.trust.approve(chat, sender);
+        self.warnings.clear(chat, sender);
+    }
+
+    /// Record an admin warning at `now_unix`. Returns the warning count and
+    /// whether the member reached `warn_limit` and should be banned (their
+    /// count then starts over).
+    pub fn warn(&mut self, chat: i64, sender: i64, now_unix: i64) -> (u32, bool) {
+        let count = self.warnings.warn(chat, sender, now_unix);
+        let limit = self.settings.warn_limit;
+        let ban = limit > 0 && count >= limit;
+        if ban {
+            self.warnings.clear(chat, sender);
+            self.trust.revoke(chat, sender);
+        }
+        (count, ban)
+    }
+
+    /// Keep a spam report for its buttons and return its ID.
+    pub fn save_report(&mut self, report: ReportRecord) -> i64 {
+        let reports = &mut self.reports;
+        if let Some(store) = &reports.store {
+            match store.add_report(&report, MAX_REPORTS) {
+                Ok(id) => return id,
+                Err(e) => tracing::warn!(error = %e, "report_save_failed"),
+            }
+        }
+        let id = reports.next_id;
+        reports.next_id += 1;
+        if reports.memory.len() >= MAX_REPORTS {
+            reports.memory.pop_front();
+        }
+        reports.memory.push_back((id, report));
+        id
+    }
+
+    /// The report with `id`, if still kept.
+    pub fn report(&self, id: i64) -> Option<ReportRecord> {
+        let reports = &self.reports;
+        if let Some((_, found)) = reports.memory.iter().find(|(i, _)| *i == id) {
+            return Some(found.clone());
+        }
+        let store = reports.store.as_ref()?;
+        store.report(id).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "report_load_failed");
+            None
+        })
     }
 
     /// Remember that `user` joined `chat` (for the newcomer-link rule).
@@ -133,22 +234,24 @@ impl Shield {
         Standing { trusted, newcomer }
     }
 
-    /// Repeats apply to everyone; campaigns only to untrusted senders.
+    /// Repeats apply to everyone. Campaigns apply to untrusted senders and
+    /// count only copies from other untrusted senders: a text a regular
+    /// posted first is not a spam wave.
     fn history_rule(&self, chat: i64, echoes: &Echoes, standing: Standing) -> Option<Decision> {
         let limit = self.settings.repeat_limit;
         if limit > 0 && echoes.repeats.len() + 1 >= limit {
             return Some(spam(Reason::Repeated, echoes.repeats.clone()));
         }
-        if self.settings.block_campaigns && !standing.trusted && !echoes.others.is_empty() {
-            let untrusted_copies = echoes
-                .others
-                .iter()
-                .filter(|(sender, _)| !self.trust.is_trusted(chat, *sender))
-                .map(|(_, id)| *id)
-                .collect();
-            return Some(spam(Reason::Campaign, untrusted_copies));
+        if !self.settings.block_campaigns || standing.trusted {
+            return None;
         }
-        None
+        let untrusted_copies: Vec<i32> = echoes
+            .others
+            .iter()
+            .filter(|(sender, _)| !self.trust.is_trusted(chat, *sender))
+            .map(|(_, id)| *id)
+            .collect();
+        (!untrusted_copies.is_empty()).then(|| spam(Reason::Campaign, untrusted_copies))
     }
 }
 
@@ -291,18 +394,71 @@ mod tests {
             Some(Reason::KnownSpammer)
         );
         shield.trust.approve(CHAT, 7);
+        let again = Incoming {
+            message_id: 2,
+            ..listed
+        };
+        assert_eq!(shield.inspect(&again, now).verdict, Verdict::Allow);
+    }
+
+    #[test]
+    fn one_spam_command_stops_the_reworded_wave() {
+        let mut shield = shield();
+        let now = Instant::now();
+        shield.learn_spam(CHAT, 1, PROMO);
+
+        let reworded =
+            "Ondo | доступен клейм $USDC. Команда открыла клейм для активных пользователей";
         assert_eq!(
-            shield
-                .inspect(
-                    &Incoming {
-                        message_id: 2,
-                        ..listed
-                    },
-                    now
-                )
-                .verdict,
+            reason(&shield.inspect(&msg(2, 1, reworded), now)),
+            Some(Reason::LearnedSpam)
+        );
+    }
+
+    #[test]
+    fn vouched_text_is_no_longer_judged_by_the_model() {
+        let mut shield = shield();
+        let now = Instant::now();
+        let link = "https://docs.arbitrum.foundation/airdrop-eligibility-distribution читайте все";
+        assert!(reason(&shield.inspect(&msg(1, 1, link), now)).is_some());
+
+        shield.vouch(CHAT, 1, link);
+
+        assert!(shield.is_trusted(CHAT, 1));
+        assert_eq!(
+            shield.inspect(&msg(2, 2, link), now).verdict,
             Verdict::Allow
         );
+    }
+
+    #[test]
+    fn third_warning_means_a_ban() {
+        let mut shield = shield();
+        let warns: Vec<(u32, bool)> = (0..3)
+            .map(|i| shield.warn(CHAT, 1, 1_800_000_000 + i))
+            .collect();
+
+        assert_eq!(warns, vec![(1, false), (2, false), (3, true)]);
+        assert_eq!(
+            shield.warn(CHAT, 1, 1_800_000_010),
+            (1, false),
+            "count starts over"
+        );
+    }
+
+    #[test]
+    fn reports_are_kept_for_their_buttons() {
+        let mut shield = shield();
+        let report = ReportRecord {
+            chat_id: CHAT,
+            sender_id: 1,
+            text: "spam".to_string(),
+        };
+
+        let id = shield.save_report(report.clone());
+
+        assert_eq!(shield.report(id), Some(report));
+        assert_eq!(shield.report(id + 1), None);
     }
 
     #[test]

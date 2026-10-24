@@ -11,7 +11,9 @@
 //! * [`moderation`] — combines heuristics + model into a [`moderation::Verdict`].
 //! * [`history`]    — recent messages and joins (repeats, campaigns, newcomers).
 //! * [`trust`]      — members who earned a lighter check.
-//! * [`store`]      — optional SQLite file that keeps trust across restarts.
+//! * [`samples`]    — messages admins marked as spam / not spam.
+//! * [`warnings`]   — admin warnings that add up to a ban.
+//! * [`store`]      — optional SQLite file that keeps state across restarts.
 //! * [`shield`]     — the decision engine tying the above together.
 //! * [`flood`]      — per-user message rate and repeat detection.
 //! * [`config`]     — runtime settings read from environment variables.
@@ -24,7 +26,9 @@ pub mod history;
 pub mod meta;
 pub mod model;
 pub mod moderation;
+pub mod samples;
 pub mod shield;
 pub mod store;
 pub mod text;
 pub mod trust;
+pub mod warnings;

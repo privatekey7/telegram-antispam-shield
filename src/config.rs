@@ -6,9 +6,11 @@
 use anyhow::{anyhow, Result};
 use std::collections::HashSet;
 use std::env;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::flood::FloodConfig;
+use crate::trust::TrustConfig;
 
 /// What to do with the author of a detected spam message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +63,24 @@ pub struct Settings {
     pub owner_id: Option<i64>,
     /// Anti-flood rules (message rate and repeats).
     pub flood: FloodConfig,
+    /// When members become trusted (content checks are skipped for them).
+    pub trust: TrustConfig,
+    /// How long messages and joins are remembered for the repeat, campaign
+    /// and newcomer rules.
+    pub history_window: Duration,
+    /// Spam when one sender posts the same text this many times within
+    /// `history_window`; 0 turns the rule off.
+    pub repeat_limit: usize,
+    /// Treat the same long text from several untrusted accounts as spam.
+    pub block_campaigns: bool,
+    /// Treat links from members who joined within `history_window` and have
+    /// not written a clean message yet as spam.
+    pub block_newcomer_links: bool,
+    /// When banning or muting a spammer, also delete their other messages
+    /// from the history window.
+    pub cleanup_on_ban: bool,
+    /// Directory for the SQLite state file; `None` keeps state in memory.
+    pub data_dir: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -80,6 +100,13 @@ impl Default for Settings {
             leave_unknown_chats: false,
             owner_id: None,
             flood: FloodConfig::default(),
+            trust: TrustConfig::default(),
+            history_window: Duration::from_secs(24 * 60 * 60),
+            repeat_limit: 3,
+            block_campaigns: true,
+            block_newcomer_links: true,
+            cleanup_on_ban: true,
+            data_dir: None,
         }
     }
 }
@@ -109,6 +136,14 @@ fn env_secs(key: &str, default: Duration) -> Duration {
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .map(Duration::from_secs)
+        .unwrap_or(default)
+}
+
+/// A non-negative number where 0 is meaningful (usually "off").
+fn env_number<T: std::str::FromStr>(key: &str, default: T) -> T {
+    env::var(key)
+        .ok()
+        .and_then(|v| v.trim().parse::<T>().ok())
         .unwrap_or(default)
 }
 
@@ -151,16 +186,26 @@ impl Settings {
                 d.block_inline_keyboards,
             ),
             exempt_admins: env_bool("ANTISPAM_EXEMPT_ADMINS", d.exempt_admins),
-            admin_cache_ttl_secs: env::var("ANTISPAM_ADMIN_CACHE_TTL")
-                .ok()
-                .and_then(|v| v.trim().parse::<u64>().ok())
-                .unwrap_or(d.admin_cache_ttl_secs),
+            admin_cache_ttl_secs: env_number("ANTISPAM_ADMIN_CACHE_TTL", d.admin_cache_ttl_secs),
             allowed_chats: parse_id_set(env::var("ANTISPAM_ALLOWED_CHATS").ok()),
             leave_unknown_chats: env_bool("ANTISPAM_LEAVE_UNKNOWN_CHATS", d.leave_unknown_chats),
             owner_id: env::var("ANTISPAM_OWNER_ID")
                 .ok()
                 .and_then(|v| v.trim().parse::<i64>().ok()),
             flood: flood_from_env(),
+            trust: TrustConfig {
+                after_messages: env_number("ANTISPAM_TRUST_AFTER", d.trust.after_messages),
+                min_chars: env_number("ANTISPAM_TRUST_MIN_CHARS", d.trust.min_chars),
+            },
+            history_window: env_secs("ANTISPAM_HISTORY_WINDOW_SECS", d.history_window),
+            repeat_limit: env_number("ANTISPAM_REPEAT_LIMIT", d.repeat_limit),
+            block_campaigns: env_bool("ANTISPAM_BLOCK_CAMPAIGNS", d.block_campaigns),
+            block_newcomer_links: env_bool("ANTISPAM_BLOCK_NEWCOMER_LINKS", d.block_newcomer_links),
+            cleanup_on_ban: env_bool("ANTISPAM_CLEANUP_ON_BAN", d.cleanup_on_ban),
+            data_dir: env::var("ANTISPAM_DATA_DIR")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .map(PathBuf::from),
         }
     }
 }

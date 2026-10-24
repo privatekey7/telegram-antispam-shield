@@ -16,6 +16,12 @@ static INVITE_LINK: LazyLock<Regex> = LazyLock::new(|| {
         .expect("invite-link regex is valid")
 });
 
+/// A web or Telegram link, including spaced-out ones (`https ://`).
+static LINK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(https?\s*:\s*//|\bt\.me/|\btelegram\.me/|\bwww\.)")
+        .expect("link regex is valid")
+});
+
 /// Wording that offers work or income. On its own this is not enough
 /// ("I hate remote work"), so a job offer also needs pay or a contact request.
 ///
@@ -86,6 +92,11 @@ pub fn is_invite_link(text: &str) -> bool {
     INVITE_LINK.is_match(text)
 }
 
+/// Whether `text` contains a link Telegram might not have marked as one.
+pub fn contains_link(text: &str) -> bool {
+    LINK.is_match(text)
+}
+
 /// Whether `text` offers work or income together with pay or a contact request.
 pub fn is_job_offer(text: &str) -> bool {
     JOB_TERMS.is_match(text) && (PAY.is_match(text) || CONTACT.is_match(text))
@@ -105,6 +116,14 @@ mod tests {
     fn ignores_normal_text_and_public_links() {
         assert!(!is_invite_link("see our channel t.me/openchannel"));
         assert!(!is_invite_link("привет, как дела?"));
+    }
+
+    #[test]
+    fn finds_links_including_spaced_out_ones() {
+        assert!(contains_link("https://claim.ondo-foundation.one/"));
+        assert!(contains_link("смотри https ://lineascan .build"));
+        assert!(contains_link("t.me/somechannel"));
+        assert!(!contains_link("встретимся в 10:30, ок?"));
     }
 
     #[test]

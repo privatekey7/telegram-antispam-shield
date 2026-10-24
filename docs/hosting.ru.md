@@ -64,6 +64,7 @@ docker-compose-v2`. На других системах: <https://docs.docker.com
 ```bash
 docker run -d --name antispam-shield --restart unless-stopped \
   --env-file .env --read-only --cap-drop ALL \
+  -v antispam-data:/data \
   --security-opt no-new-privileges:true --memory 128m \
   ghcr.io/privatekey7/telegram-antispam-shield:0.2
 ```
@@ -78,6 +79,9 @@ Railway, Render, Fly.io, Koyeb, Northflank, кластер Kubernetes — под
 - **Тип сервиса:** worker / background — без публичного порта и HTTP
   health-check, **один** экземпляр, перезапуск при сбое.
 - **Ресурсы:** хватит самого маленького размера (≈64 МБ памяти).
+- **Том (необязательно):** подключите небольшой постоянный том в `/data`,
+  чтобы доверенные участники переживали передеплой. Без него бот работает,
+  но после каждого перезапуска снова проверяет всех полностью.
 
 Railway умеет собирать и из вашего форка: **New Project → Deploy from GitHub
 repo**, затем добавьте `BOT_TOKEN` во **Variables**. Файл `railway.json`
@@ -115,6 +119,8 @@ After=network-online.target
 [Service]
 ExecStart=/usr/local/bin/telegram-antispam-shield
 EnvironmentFile=/etc/antispam-shield.env
+Environment=ANTISPAM_DATA_DIR=/var/lib/antispam-shield
+StateDirectory=antispam-shield
 DynamicUser=yes
 Restart=on-failure
 RestartSec=5

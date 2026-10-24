@@ -2,6 +2,12 @@
 /target
 **/*.rs.bk
 
+# Local state (ANTISPAM_DATA_DIR)
+/data/
+*.db
+*.db-wal
+*.db-shm
+
 # Secrets / local env
 .env
 .env.*

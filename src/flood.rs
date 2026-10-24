@@ -9,10 +9,10 @@
 //! The module is pure (no Telegram, no clock): callers pass `now`, which keeps
 //! every rule unit-testable.
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
+
+use crate::text;
 
 /// Shortest normalized text the duplicate rule applies to. Replies like "+"
 /// or "ок" are legitimately repeated; the rate rule still covers them.
@@ -161,7 +161,9 @@ impl FloodGuard {
         state.recent.push_back(RecentMessage {
             at: now,
             message_id: msg.message_id,
-            fingerprint: msg.text.and_then(fingerprint),
+            fingerprint: msg
+                .text
+                .and_then(|t| text::fingerprint(t, MIN_DUPLICATE_CHARS)),
             rate_key: match msg.media_group_id {
                 Some(group) => RateKey::MediaGroup(group.to_owned()),
                 None => RateKey::Message(msg.message_id),
@@ -267,43 +269,6 @@ fn mute_for_strike(steps: &[Duration], strike: u32) -> Duration {
         .unwrap_or_default()
 }
 
-/// Reduce text to a comparable form: lowercase letters and digits only, with
-/// runs of the same character collapsed ("Приииивет!!!" == "привет").
-/// Emoji-only text falls back to its non-whitespace characters.
-pub fn normalize(text: &str) -> String {
-    let alphanumeric: String = text
-        .chars()
-        .filter(|c| c.is_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect();
-    let base = if alphanumeric.is_empty() {
-        text.chars().filter(|c| !c.is_whitespace()).collect()
-    } else {
-        alphanumeric
-    };
-
-    let mut collapsed = String::with_capacity(base.len());
-    let mut previous = None;
-    for c in base.chars() {
-        if previous != Some(c) {
-            collapsed.push(c);
-        }
-        previous = Some(c);
-    }
-    collapsed
-}
-
-/// Hash of the normalized text, or `None` when it is too short to compare.
-fn fingerprint(text: &str) -> Option<u64> {
-    let normalized = normalize(text);
-    if normalized.chars().count() < MIN_DUPLICATE_CHARS {
-        return None;
-    }
-    let mut hasher = DefaultHasher::new();
-    normalized.hash(&mut hasher);
-    Some(hasher.finish())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,13 +288,6 @@ mod tests {
 
     fn secs(n: u64) -> Duration {
         Duration::from_secs(n)
-    }
-
-    #[test]
-    fn normalize_ignores_case_punctuation_and_stretched_letters() {
-        assert_eq!(normalize("Приииивет, МИР!!!"), normalize("привет мир"));
-        assert_eq!(normalize("BUY   now"), "buynow");
-        assert_eq!(normalize("😂😂😂"), "😂");
     }
 
     #[test]

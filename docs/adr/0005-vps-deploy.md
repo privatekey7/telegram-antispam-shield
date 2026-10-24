@@ -1,6 +1,6 @@
 # 5. Self-hosted VPS deploy via GHCR images
 
-- Status: accepted
+- Status: accepted, amended by [ADR 0006](0006-self-hosting-releases.md)
 - Date: 2026-10-24
 
 ## Context
@@ -35,7 +35,7 @@ disk and has already run out of memory on small builders.
 
 - Hosting cost for the reference instance drops to zero on top of the VPS.
 - The deploy pipeline needs four secrets and one-time server setup
-  (`docs/deploy-vps.md`).
+  (`docs/auto-deploy.md`).
 - The `deploy` user is in the `docker` group, which is root-equivalent on the
   host; the forced command is the boundary that keeps the CI key limited.
 - Rollback is a one-liner with the previous SHA.

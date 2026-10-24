@@ -1,0 +1,27 @@
+# Run the bot with Docker Compose (see docs/hosting.md):
+#
+#   cp .env.example .env     # put BOT_TOKEN in .env
+#   docker compose up -d
+#
+# Bot settings (BOT_TOKEN, ANTISPAM_*) live in `.env` next to this file, which
+# is never committed. The same `.env` may set IMAGE / IMAGE_TAG to run another
+# image or version; deploy/deploy.sh writes IMAGE_TAG there.
+name: antispam-shield
+
+services:
+  bot:
+    image: ${IMAGE:-ghcr.io/privatekey7/telegram-antispam-shield}:${IMAGE_TAG:-0.2}
+    restart: unless-stopped
+    env_file: .env
+    # Least privilege: the bot needs only outbound HTTPS to api.telegram.org.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # The bot needs ~30 MB; the caps keep it from crowding out other services.
+    mem_limit: 128m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

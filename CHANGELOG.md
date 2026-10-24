@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Edited messages are now moderated. Before, a member could post a harmless
+  text and later edit it into spam unseen, since the bot did not even
+  subscribe to `edited_message` updates. An edit is checked like a new
+  message, and a report marks it as edited. It does not count toward
+  anti-flood, repeats or trust, and cannot run admin commands.
+
 ### Fixed
 - Messages that reply to a text message from another chat lost their text in
   teloxide and were neither moderated nor read as commands. This includes

@@ -2,8 +2,9 @@
 //!
 //! Loads settings, the model and the optional state file, then dispatches
 //! updates to [`bot`]: group messages are checked for flood and spam (and
-//! admin commands), member joins feed the newcomer rule, report buttons
-//! undo or confirm decisions, and private chats get /start and /status.
+//! admin commands), edited messages for spam, member joins feed the
+//! newcomer rule, report buttons undo or confirm decisions, and private
+//! chats get /start and /status.
 
 mod bot;
 
@@ -70,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
     // The handler tree also tells Telegram which update types to send.
     let handler = dptree::entry()
         .branch(Update::filter_message().endpoint(bot::on_message))
+        .branch(Update::filter_edited_message().endpoint(bot::on_edited_message))
         .branch(Update::filter_chat_member().endpoint(bot::on_chat_member))
         .branch(Update::filter_callback_query().endpoint(bot::on_callback));
     let poller = bot::Poller::new(bot.clone()).await;

@@ -79,23 +79,8 @@ impl History {
         let log = self.chats.entry(chat).or_default();
         prune(&mut log.messages, window, now);
 
-        let fingerprint = text.and_then(|t| {
-            let chars = text::normalize(t).chars().count();
-            text::fingerprint(t, REPEAT_MIN_CHARS).map(|hash| (hash, chars))
-        });
-        let mut echoes = Echoes::default();
-        if let Some((hash, chars)) = fingerprint {
-            for earlier in &log.messages {
-                if earlier.fingerprint.map(|(h, _)| h) != Some(hash) {
-                    continue;
-                }
-                if earlier.sender == sender {
-                    echoes.repeats.push(earlier.message_id);
-                } else if chars >= CAMPAIGN_MIN_CHARS {
-                    echoes.others.push((earlier.sender, earlier.message_id));
-                }
-            }
-        }
+        let fingerprint = fingerprint(text);
+        let echoes = find_echoes(log.messages.iter(), sender, fingerprint);
 
         if log.messages.len() >= MAX_MESSAGES_PER_CHAT {
             log.messages.pop_front();
@@ -107,6 +92,26 @@ impl History {
             fingerprint,
         });
         echoes
+    }
+
+    /// Echoes of an edited message's new text, without recording it: an edit
+    /// is not a new message. The message's own earlier version is skipped.
+    pub fn echoes_of_edit(
+        &self,
+        chat: i64,
+        sender: i64,
+        message_id: i32,
+        text: Option<&str>,
+        now: Instant,
+    ) -> Echoes {
+        let Some(log) = self.chats.get(&chat) else {
+            return Echoes::default();
+        };
+        let earlier = log.messages.iter().filter(|m| {
+            now.duration_since(m.at) <= self.window
+                && !(m.sender == sender && m.message_id == message_id)
+        });
+        find_echoes(earlier, sender, fingerprint(text))
     }
 
     /// Remember that `user` joined `chat`.
@@ -142,6 +147,38 @@ impl History {
             !log.messages.is_empty() || !log.joins.is_empty()
         });
     }
+}
+
+/// Hash of the normalized text and its length in characters, if the text is
+/// long enough to compare.
+fn fingerprint(text: Option<&str>) -> Option<(u64, usize)> {
+    text.and_then(|t| {
+        let chars = text::normalize(t).chars().count();
+        text::fingerprint(t, REPEAT_MIN_CHARS).map(|hash| (hash, chars))
+    })
+}
+
+/// Messages among `earlier` with the same text as `fingerprint`.
+fn find_echoes<'a>(
+    earlier: impl Iterator<Item = &'a Entry>,
+    sender: i64,
+    fingerprint: Option<(u64, usize)>,
+) -> Echoes {
+    let mut echoes = Echoes::default();
+    let Some((hash, chars)) = fingerprint else {
+        return echoes;
+    };
+    for entry in earlier {
+        if entry.fingerprint.map(|(h, _)| h) != Some(hash) {
+            continue;
+        }
+        if entry.sender == sender {
+            echoes.repeats.push(entry.message_id);
+        } else if chars >= CAMPAIGN_MIN_CHARS {
+            echoes.others.push((entry.sender, entry.message_id));
+        }
+    }
+    echoes
 }
 
 fn prune(messages: &mut VecDeque<Entry>, window: Duration, now: Instant) {

@@ -34,6 +34,8 @@ pub struct Incident<'a> {
     pub reason: Reason,
     pub score: f32,
     pub deleted: usize,
+    /// The spam was edited into an earlier message.
+    pub edited: bool,
 }
 
 /// Send a report about `incident`, if reports are configured.
@@ -58,9 +60,14 @@ pub async fn send(bot: &Bot, state: &AppState, incident: Incident<'_>) {
         .chat
         .title()
         .map_or_else(|| incident.chat.id.to_string(), str::to_owned);
+    let title = if incident.edited {
+        "🛡 Спам (правка) · Spam (edited)"
+    } else {
+        "🛡 Спам · Spam"
+    };
     // Plain text (no parse mode), so names and spam cannot inject markup.
     let body = format!(
-        "🛡 Спам · Spam\n\
+        "{title}\n\
          Чат · Chat: {chat_name}\n\
          Автор · Sender: {} (id {})\n\
          Причина · Reason: {} ({:.2})\n\

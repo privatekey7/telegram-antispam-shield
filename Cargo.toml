@@ -24,6 +24,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 dotenvy = "0.15"
+# Already pulled in by teloxide: HTTP for CAS lookups and JSON decoding.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde = { version = "1", features = ["derive"] }
 # Already pulled in by teloxide; needed for mute end times (`until_date`).
 chrono = { version = "0.4", default-features = false }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
@@ -32,3 +35,6 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 # Keep the release build lightweight and reliable on small CI/PaaS builders
 # (aggressive LTO + single codegen unit can run out of memory there).
 strip = true
+
+[dev-dependencies]
+serde_json = "1.0.154"

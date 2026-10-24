@@ -15,7 +15,8 @@ services:
     env_file: .env
     volumes:
       - data:/data
-    # Least privilege: the bot needs only outbound HTTPS to api.telegram.org.
+    # Least privilege: the bot needs only outbound HTTPS (api.telegram.org,
+    # and api.cas.chat unless ANTISPAM_CAS_ENABLED=false).
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]

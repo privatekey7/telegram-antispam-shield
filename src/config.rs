@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::flood::FloodConfig;
+use crate::meta::Script;
 use crate::trust::TrustConfig;
 
 /// What to do with the author of a detected spam message.
@@ -81,6 +82,51 @@ pub struct Settings {
     pub cleanup_on_ban: bool,
     /// Directory for the SQLite state file; `None` keeps state in memory.
     pub data_dir: Option<PathBuf>,
+    /// Shorter messages without links skip the model: too little signal.
+    pub model_min_chars: usize,
+    /// Spam when this many words mix Cyrillic and Latin letters; 0 = off.
+    pub mixed_script_words: usize,
+    /// Spam when a message has this many emoji; 0 = off.
+    pub emoji_limit: usize,
+    /// Treat a message that is only a bot's `@username` as spam.
+    pub block_bot_mentions: bool,
+    /// Writing systems whose messages are spam (opt-in).
+    pub blocked_scripts: Vec<Script>,
+    /// Lower-case phrases that make a message spam (opt-in).
+    pub stop_words: Vec<String>,
+    /// Treat forwards and quotes from other chats as spam (opt-in).
+    pub block_forwards: bool,
+    /// Spam when a message has this many links; 0 = off.
+    pub link_limit: usize,
+    /// Spam when a message has this many `@mentions`; 0 = off.
+    pub mention_limit: usize,
+    /// Combot Anti-Spam lookups of untrusted members.
+    pub cas: CasConfig,
+    /// Delete "joined" / "left" service messages.
+    pub delete_service_messages: bool,
+}
+
+/// Lookups in the Combot Anti-Spam (CAS) database of known spammers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CasConfig {
+    pub enabled: bool,
+    /// API base URL.
+    pub url: String,
+    /// A slow lookup is treated as "not listed".
+    pub timeout: Duration,
+    /// How long a lookup result is reused.
+    pub cache_ttl: Duration,
+}
+
+impl Default for CasConfig {
+    fn default() -> Self {
+        CasConfig {
+            enabled: true,
+            url: "https://api.cas.chat".to_string(),
+            timeout: Duration::from_secs(5),
+            cache_ttl: Duration::from_secs(60 * 60),
+        }
+    }
 }
 
 impl Default for Settings {
@@ -107,6 +153,17 @@ impl Default for Settings {
             block_newcomer_links: true,
             cleanup_on_ban: true,
             data_dir: None,
+            model_min_chars: 20,
+            mixed_script_words: 2,
+            emoji_limit: 10,
+            block_bot_mentions: true,
+            blocked_scripts: Vec::new(),
+            stop_words: Vec::new(),
+            block_forwards: false,
+            link_limit: 0,
+            mention_limit: 0,
+            cas: CasConfig::default(),
+            delete_service_messages: false,
         }
     }
 }
@@ -206,6 +263,34 @@ impl Settings {
                 .ok()
                 .filter(|v| !v.trim().is_empty())
                 .map(PathBuf::from),
+            model_min_chars: env_number("ANTISPAM_MODEL_MIN_CHARS", d.model_min_chars),
+            mixed_script_words: env_number("ANTISPAM_MIXED_SCRIPT_WORDS", d.mixed_script_words),
+            emoji_limit: env_number("ANTISPAM_EMOJI_LIMIT", d.emoji_limit),
+            block_bot_mentions: env_bool("ANTISPAM_BLOCK_BOT_MENTIONS", d.block_bot_mentions),
+            blocked_scripts: parse_list(env::var("ANTISPAM_BLOCKED_SCRIPTS").ok())
+                .iter()
+                .filter_map(|name| Script::parse(name))
+                .collect(),
+            stop_words: parse_list(env::var("ANTISPAM_STOP_WORDS").ok())
+                .into_iter()
+                .map(|w| w.to_lowercase())
+                .collect(),
+            block_forwards: env_bool("ANTISPAM_BLOCK_FORWARDS", d.block_forwards),
+            link_limit: env_number("ANTISPAM_LINK_LIMIT", d.link_limit),
+            mention_limit: env_number("ANTISPAM_MENTION_LIMIT", d.mention_limit),
+            cas: CasConfig {
+                enabled: env_bool("ANTISPAM_CAS_ENABLED", d.cas.enabled),
+                url: env::var("ANTISPAM_CAS_URL")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+                    .unwrap_or(d.cas.url),
+                timeout: env_secs("ANTISPAM_CAS_TIMEOUT_SECS", d.cas.timeout),
+                cache_ttl: d.cas.cache_ttl,
+            },
+            delete_service_messages: env_bool(
+                "ANTISPAM_DELETE_SERVICE_MESSAGES",
+                d.delete_service_messages,
+            ),
         }
     }
 }
@@ -252,6 +337,17 @@ fn parse_duration(raw: &str) -> Option<Duration> {
     };
     let value = number.trim().parse::<u64>().ok().filter(|v| *v > 0)?;
     Some(Duration::from_secs(value.checked_mul(multiplier)?))
+}
+
+/// Parse a list of phrases separated by commas or newlines (spaces are kept,
+/// so "stop word" can be a phrase).
+fn parse_list(raw: Option<String>) -> Vec<String> {
+    raw.unwrap_or_default()
+        .split([',', '\n'])
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Parse a list of chat IDs separated by commas, spaces, semicolons or newlines.
@@ -316,6 +412,15 @@ mod tests {
         assert_eq!(parse_duration_list(""), None);
         assert_eq!(parse_duration_list("10m,soon"), None);
         assert_eq!(parse_duration_list("0m"), None);
+    }
+
+    #[test]
+    fn phrase_list_parsing() {
+        assert_eq!(
+            parse_list(Some(" казино, быстрый заработок ,\nxxx".into())),
+            vec!["казино", "быстрый заработок", "xxx"]
+        );
+        assert!(parse_list(None).is_empty());
     }
 
     #[test]

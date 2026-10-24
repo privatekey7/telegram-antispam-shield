@@ -1,10 +1,13 @@
-//! Text clean-up shared by the spam rules.
+//! Text clean-up shared by the spam rules: invisible characters and the
+//! normalized form used to spot repeated messages.
 //!
 //! Spammers hide words from filters with invisible characters (`act\u{200B}ive`).
 //! The classifier sees the cleaned text, and an invisible character between
 //! two letters is itself a strong spam signal: people do not type them.
 
 use std::borrow::Cow;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 /// Characters that render as nothing. Zero-width (non-)joiners are included
 /// for stripping only: they legitimately join emoji and some scripts.
@@ -48,9 +51,63 @@ pub fn hides_characters_in_words(text: &str) -> bool {
     false
 }
 
+/// Reduce text to a comparable form: lowercase letters and digits only, with
+/// runs of the same character collapsed ("Приииивет!!!" == "привет").
+/// Emoji-only text falls back to its non-whitespace characters.
+pub fn normalize(text: &str) -> String {
+    let alphanumeric: String = text
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    let base = if alphanumeric.is_empty() {
+        text.chars().filter(|c| !c.is_whitespace()).collect()
+    } else {
+        alphanumeric
+    };
+
+    let mut collapsed = String::with_capacity(base.len());
+    let mut previous = None;
+    for c in base.chars() {
+        if previous != Some(c) {
+            collapsed.push(c);
+        }
+        previous = Some(c);
+    }
+    collapsed
+}
+
+/// Hash of the normalized text, or `None` when it has fewer than `min_chars`
+/// characters (too short to call two messages "the same").
+pub fn fingerprint(text: &str, min_chars: usize) -> Option<u64> {
+    let normalized = normalize(text);
+    if normalized.chars().count() < min_chars {
+        return None;
+    }
+    let mut hasher = DefaultHasher::new();
+    normalized.hash(&mut hasher);
+    Some(hasher.finish())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_ignores_case_punctuation_and_stretched_letters() {
+        assert_eq!(normalize("Приииивет, МИР!!!"), normalize("привет мир"));
+        assert_eq!(normalize("BUY   now"), "buynow");
+        assert_eq!(normalize("😂😂😂"), "😂");
+    }
+
+    #[test]
+    fn fingerprint_needs_enough_characters() {
+        assert_eq!(fingerprint("ок", 3), None);
+        assert_eq!(
+            fingerprint("Купи СЕЙЧАС!", 3),
+            fingerprint("купи сейчас", 3)
+        );
+    }
 
     #[test]
     fn strips_zero_width_characters() {

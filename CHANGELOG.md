@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Trusted members (`ANTISPAM_TRUST_AFTER=3`, `ANTISPAM_TRUST_MIN_CHARS=10`,
+  ADR 0007): after three clean messages a member skips the model, job-offer
+  and newcomer-link checks. Any spam verdict resets them. Trust is saved
+  in SQLite (`ANTISPAM_DATA_DIR/antispam.db`; the Docker image uses `/data`
+  and `compose.yaml` mounts a named volume there).
+- 24-hour chat history (`ANTISPAM_HISTORY_WINDOW_SECS`) with three rules:
+  repeats (`ANTISPAM_REPEAT_LIMIT=3`, the same text from one member even
+  hours apart), campaigns (`ANTISPAM_BLOCK_CAMPAIGNS`, the same long text
+  from several untrusted accounts; all copies are deleted) and newcomer
+  links (`ANTISPAM_BLOCK_NEWCOMER_LINKS`, a link from someone who joined
+  recently and has not talked yet). Joins are read from service messages
+  and `chat_member` updates.
+- `ANTISPAM_CLEANUP_ON_BAN` (on): banning or muting a spammer also deletes
+  their other messages from the history window.
 - Hidden-character rule (`ANTISPAM_BLOCK_HIDDEN_CHARACTERS`, on): an
   invisible character between two letters (`act​ive`) marks spam. The
   classifier now also sees text with invisible characters removed.
@@ -57,6 +71,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   script and lints the workflows (actionlint) on every PR.
 
 ### Changed
+- The spam decision is now one pure function, `Shield::inspect`
+  (`src/shield.rs`). The Telegram glue moved from `main.rs` to `src/bot/`.
+- On a replay of a real 13k-message spam-ridden chat, spam caught rose
+  from 21% to 67% and false positives fell from 1.8% to 0.26%.
 - `/status` now also reports `allowed_chats`, `leave_unknown_chats` and the
   anti-flood limits.
 - Admin exemption is now checked for every message (including media), since

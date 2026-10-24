@@ -17,6 +17,17 @@ pub struct MessageFacts<'a> {
     /// Inline buttons on a message from a person rather than an inline bot.
     /// Only automation (for example a business bot) can attach them.
     pub inline_keyboard: bool,
+    /// Telegram marked a link in the text (`url` or `text_link` entity).
+    pub has_link: bool,
+}
+
+/// What the bot knows about the sender in this chat.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Standing {
+    /// Earned trust (see [`crate::trust`]): content checks are skipped.
+    pub trusted: bool,
+    /// Joined recently and has not written a clean message yet.
+    pub newcomer: bool,
 }
 
 impl<'a> MessageFacts<'a> {
@@ -35,6 +46,12 @@ pub enum Reason {
     InlineKeyboard,
     HiddenCharacters,
     InviteLink,
+    /// The sender posted the same text several times within the history window.
+    Repeated,
+    /// Other accounts posted the same long text within the history window.
+    Campaign,
+    /// A link from someone who joined recently and has not talked yet.
+    NewcomerLink,
     JobOffer,
     Model,
 }
@@ -46,6 +63,9 @@ impl Reason {
             Reason::InlineKeyboard => "inline_keyboard",
             Reason::HiddenCharacters => "hidden_characters",
             Reason::InviteLink => "telegram_invite_link",
+            Reason::Repeated => "repeated_message",
+            Reason::Campaign => "spam_campaign",
+            Reason::NewcomerLink => "newcomer_link",
             Reason::JobOffer => "job_offer",
             Reason::Model => "ml_model",
         }
@@ -66,7 +86,15 @@ pub enum Verdict {
 /// Heuristics run first (fast, high precision). If none fire, the ML model
 /// decides using the effective threshold. Rules and model see the text
 /// without invisible characters and with hidden link targets appended.
-pub fn classify(model: &Model, settings: &Settings, facts: &MessageFacts<'_>) -> Verdict {
+/// Trusted senders only face the rules that have no false positives in
+/// practice; the content checks (newcomer links, job offers, model) are for
+/// everyone else.
+pub fn classify(
+    model: &Model,
+    settings: &Settings,
+    facts: &MessageFacts<'_>,
+    standing: Standing,
+) -> Verdict {
     let rule = |reason| Verdict::Spam { score: 1.0, reason };
 
     if settings.block_inline_keyboards && facts.inline_keyboard {
@@ -82,6 +110,13 @@ pub fn classify(model: &Model, settings: &Settings, facts: &MessageFacts<'_>) ->
     }
     if settings.block_invite_links && heuristics::is_invite_link(&content) {
         return rule(Reason::InviteLink);
+    }
+    if standing.trusted {
+        return Verdict::Allow;
+    }
+    let has_link = facts.has_link || heuristics::contains_link(&content);
+    if settings.block_newcomer_links && standing.newcomer && has_link {
+        return rule(Reason::NewcomerLink);
     }
     if settings.block_job_offers && heuristics::is_job_offer(&content) {
         return rule(Reason::JobOffer);
@@ -118,7 +153,7 @@ mod tests {
 
     fn check(facts: &MessageFacts<'_>) -> Verdict {
         let model = Model::load_default().unwrap();
-        classify(&model, &Settings::default(), facts)
+        classify(&model, &Settings::default(), facts, Standing::default())
     }
 
     fn reason_of(verdict: Verdict) -> Option<Reason> {
@@ -166,7 +201,12 @@ mod tests {
             ..Settings::default()
         };
         let offer = "Удалённая работа для всех, пишите в лс";
-        let verdict = classify(&model, &settings, &MessageFacts::text(offer));
+        let verdict = classify(
+            &model,
+            &settings,
+            &MessageFacts::text(offer),
+            Standing::default(),
+        );
         assert_ne!(reason_of(verdict), Some(Reason::JobOffer));
     }
 
@@ -212,5 +252,64 @@ mod tests {
     #[test]
     fn empty_message_is_allowed() {
         assert_eq!(check(&MessageFacts::text(" \u{200B} ")), Verdict::Allow);
+    }
+
+    fn check_as(standing: Standing, facts: &MessageFacts<'_>) -> Verdict {
+        let model = Model::load_default().unwrap();
+        classify(&model, &Settings::default(), facts, standing)
+    }
+
+    #[test]
+    fn trusted_member_may_post_a_bare_link() {
+        let link =
+            MessageFacts::text("https://docs.arbitrum.foundation/airdrop-eligibility-distribution");
+        let trusted = Standing {
+            trusted: true,
+            ..Standing::default()
+        };
+
+        assert_eq!(check_as(trusted, &link), Verdict::Allow);
+        assert!(
+            matches!(check(&link), Verdict::Spam { .. }),
+            "unknown sender"
+        );
+    }
+
+    #[test]
+    fn trusted_member_still_faces_zero_tolerance_rules() {
+        let trusted = Standing {
+            trusted: true,
+            ..Standing::default()
+        };
+        let verdict = check_as(trusted, &MessageFacts::text("t.me/+SecretInvite"));
+        assert_eq!(reason_of(verdict), Some(Reason::InviteLink));
+    }
+
+    #[test]
+    fn newcomer_link_is_spam() {
+        let newcomer = Standing {
+            newcomer: true,
+            ..Standing::default()
+        };
+        let links = ["https://claim.dscvr.ink/".to_string()];
+        let drainer = MessageFacts {
+            text: "DSCVR залетаем клеймить дроп от старичка 22 года",
+            hidden_links: &links,
+            ..MessageFacts::default()
+        };
+        assert_eq!(
+            reason_of(check_as(newcomer, &drainer)),
+            Some(Reason::NewcomerLink)
+        );
+    }
+
+    #[test]
+    fn newcomer_without_link_is_judged_normally() {
+        let newcomer = Standing {
+            newcomer: true,
+            ..Standing::default()
+        };
+        let hello = MessageFacts::text("Всем привет! Подскажите, где почитать правила чата?");
+        assert_eq!(check_as(newcomer, &hello), Verdict::Allow);
     }
 }

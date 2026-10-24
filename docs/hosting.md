@@ -63,6 +63,7 @@ Same thing in one command, if you do not want Compose:
 ```bash
 docker run -d --name antispam-shield --restart unless-stopped \
   --env-file .env --read-only --cap-drop ALL \
+  -v antispam-data:/data \
   --security-opt no-new-privileges:true --memory 128m \
   ghcr.io/privatekey7/telegram-antispam-shield:0.2
 ```
@@ -77,6 +78,9 @@ that runs a Docker image as an always-on background worker:
 - **Service type:** worker / background — no public port, no HTTP health
   check, **one** instance, restart on failure.
 - **Resources:** the smallest size (≈64 MB RAM) is enough.
+- **Volume (optional):** mount a small persistent volume at `/data`, so
+  trusted members survive redeploys. Without it the bot works, but every
+  restart puts all members back under the full checks.
 
 Railway can also build from your fork: **New Project → Deploy from GitHub
 repo**, add `BOT_TOKEN` under **Variables**. `railway.json` tells it to use the
@@ -113,6 +117,8 @@ After=network-online.target
 [Service]
 ExecStart=/usr/local/bin/telegram-antispam-shield
 EnvironmentFile=/etc/antispam-shield.env
+Environment=ANTISPAM_DATA_DIR=/var/lib/antispam-shield
+StateDirectory=antispam-shield
 DynamicUser=yes
 Restart=on-failure
 RestartSec=5

@@ -97,6 +97,11 @@ pub fn contains_link(text: &str) -> bool {
     LINK.is_match(text)
 }
 
+/// Number of links in `text`.
+pub fn link_count(text: &str) -> usize {
+    LINK.find_iter(text).count()
+}
+
 /// Whether `text` offers work or income together with pay or a contact request.
 pub fn is_job_offer(text: &str) -> bool {
     JOB_TERMS.is_match(text) && (PAY.is_match(text) || CONTACT.is_match(text))

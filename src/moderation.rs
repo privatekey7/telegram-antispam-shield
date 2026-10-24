@@ -4,6 +4,7 @@ use std::borrow::Cow;
 
 use crate::config::Settings;
 use crate::heuristics;
+use crate::meta;
 use crate::model::Model;
 use crate::text;
 
@@ -19,6 +20,8 @@ pub struct MessageFacts<'a> {
     pub inline_keyboard: bool,
     /// Telegram marked a link in the text (`url` or `text_link` entity).
     pub has_link: bool,
+    /// Forwarded, or quoting a message from another chat.
+    pub forwarded: bool,
 }
 
 /// What the bot knows about the sender in this chat.
@@ -52,6 +55,18 @@ pub enum Reason {
     Campaign,
     /// A link from someone who joined recently and has not talked yet.
     NewcomerLink,
+    /// The sender is listed in the Combot Anti-Spam database.
+    KnownSpammer,
+    StopWord,
+    BlockedScript,
+    /// Nothing but a bot's `@username` (the trigger of business-bot spam).
+    BotMention,
+    /// Words mixing Cyrillic and Latin letters (homoglyphs).
+    MixedScripts,
+    TooManyEmoji,
+    TooManyLinks,
+    TooManyMentions,
+    Forwarded,
     JobOffer,
     Model,
 }
@@ -66,6 +81,15 @@ impl Reason {
             Reason::Repeated => "repeated_message",
             Reason::Campaign => "spam_campaign",
             Reason::NewcomerLink => "newcomer_link",
+            Reason::KnownSpammer => "cas_banned",
+            Reason::StopWord => "stop_word",
+            Reason::BlockedScript => "blocked_script",
+            Reason::BotMention => "bot_mention",
+            Reason::MixedScripts => "mixed_scripts",
+            Reason::TooManyEmoji => "too_many_emoji",
+            Reason::TooManyLinks => "too_many_links",
+            Reason::TooManyMentions => "too_many_mentions",
+            Reason::Forwarded => "forwarded",
             Reason::JobOffer => "job_offer",
             Reason::Model => "ml_model",
         }
@@ -87,8 +111,9 @@ pub enum Verdict {
 /// decides using the effective threshold. Rules and model see the text
 /// without invisible characters and with hidden link targets appended.
 /// Trusted senders only face the rules that have no false positives in
-/// practice; the content checks (newcomer links, job offers, model) are for
-/// everyone else.
+/// practice; the content and shape checks are for everyone else. Messages
+/// shorter than `model_min_chars` without links skip the model: one or two
+/// words carry too little signal ("лс", "всем привет").
 pub fn classify(
     model: &Model,
     settings: &Settings,
@@ -105,24 +130,34 @@ pub fn classify(
     }
 
     let content = classifier_input(facts);
-    if content.trim().is_empty() {
-        return Verdict::Allow;
-    }
     if settings.block_invite_links && heuristics::is_invite_link(&content) {
         return rule(Reason::InviteLink);
     }
     if standing.trusted {
         return Verdict::Allow;
     }
-    let has_link = facts.has_link || heuristics::contains_link(&content);
+    if settings.block_forwards && facts.forwarded {
+        return rule(Reason::Forwarded);
+    }
+    let content = content.trim();
+    if content.is_empty() {
+        return Verdict::Allow;
+    }
+    let has_link = facts.has_link || heuristics::contains_link(content);
     if settings.block_newcomer_links && standing.newcomer && has_link {
         return rule(Reason::NewcomerLink);
     }
-    if settings.block_job_offers && heuristics::is_job_offer(&content) {
+    if let Some(reason) = shape_rule(settings, content) {
+        return rule(reason);
+    }
+    if settings.block_job_offers && heuristics::is_job_offer(content) {
         return rule(Reason::JobOffer);
     }
+    if !has_link && content.chars().count() < settings.model_min_chars {
+        return Verdict::Allow;
+    }
 
-    let (is_spam, score) = model.is_spam(&content, settings.threshold);
+    let (is_spam, score) = model.is_spam(content, settings.threshold);
     if is_spam {
         Verdict::Spam {
             score,
@@ -130,6 +165,37 @@ pub fn classify(
         }
     } else {
         Verdict::Allow
+    }
+}
+
+/// Opt-in word lists and the shape checks of [`meta`], in order of precision.
+fn shape_rule(settings: &Settings, content: &str) -> Option<Reason> {
+    let lowered = content.to_lowercase();
+    let reached = |limit: usize, count: usize| limit > 0 && count >= limit;
+
+    if settings
+        .stop_words
+        .iter()
+        .any(|w| lowered.contains(w.as_str()))
+    {
+        Some(Reason::StopWord)
+    } else if meta::blocked_script(content, &settings.blocked_scripts).is_some() {
+        Some(Reason::BlockedScript)
+    } else if settings.block_bot_mentions && meta::is_bot_mention_only(content) {
+        Some(Reason::BotMention)
+    } else if reached(
+        settings.mixed_script_words,
+        meta::mixed_script_words(content),
+    ) {
+        Some(Reason::MixedScripts)
+    } else if reached(settings.emoji_limit, meta::emoji_count(content)) {
+        Some(Reason::TooManyEmoji)
+    } else if reached(settings.link_limit, heuristics::link_count(content)) {
+        Some(Reason::TooManyLinks)
+    } else if reached(settings.mention_limit, meta::mention_count(content)) {
+        Some(Reason::TooManyMentions)
+    } else {
+        None
     }
 }
 
@@ -311,5 +377,97 @@ mod tests {
         };
         let hello = MessageFacts::text("Всем привет! Подскажите, где почитать правила чата?");
         assert_eq!(check_as(newcomer, &hello), Verdict::Allow);
+    }
+
+    fn check_with(settings: &Settings, facts: &MessageFacts<'_>) -> Verdict {
+        let model = Model::load_default().unwrap();
+        classify(&model, settings, facts, Standing::default())
+    }
+
+    #[test]
+    fn short_messages_skip_the_model() {
+        for short in ["лс", "0/2", "всем привет", "Напиши в лс"] {
+            assert_eq!(check(&MessageFacts::text(short)), Verdict::Allow, "{short}");
+        }
+    }
+
+    #[test]
+    fn messages_with_links_meet_the_model_whatever_their_length() {
+        let settings = Settings {
+            model_min_chars: 1000,
+            ..Settings::default()
+        };
+        let link =
+            MessageFacts::text("https://docs.arbitrum.foundation/airdrop-eligibility-distribution");
+        assert!(matches!(check_with(&settings, &link), Verdict::Spam { .. }));
+    }
+
+    #[test]
+    fn bot_mention_trigger_is_spam() {
+        assert_eq!(
+            reason_of(check(&MessageFacts::text("@gjwgjglkewbot"))),
+            Some(Reason::BotMention)
+        );
+    }
+
+    #[test]
+    fn homoglyph_words_are_spam() {
+        // The "a" and "e" letters are Latin.
+        let text = "Зaрaботок для всех, пишитe мнe прямо сейчас";
+        assert_eq!(
+            reason_of(check(&MessageFacts::text(text))),
+            Some(Reason::MixedScripts)
+        );
+    }
+
+    #[test]
+    fn emoji_wall_is_spam() {
+        let text = "🔥🔥🔥 Best Videos Here 🍓🍓🍓 Best Photos 👇👇👇👇";
+        assert_eq!(
+            reason_of(check(&MessageFacts::text(text))),
+            Some(Reason::TooManyEmoji)
+        );
+    }
+
+    #[test]
+    fn opt_in_checks_are_off_by_default() {
+        let forwarded = MessageFacts {
+            text: "Интересная статья про L2 решения, советую прочитать",
+            forwarded: true,
+            ..MessageFacts::default()
+        };
+        assert_eq!(check(&forwarded), Verdict::Allow);
+        assert_eq!(
+            check(&MessageFacts::text("Кто играет в казино по вечерам?")),
+            Verdict::Allow
+        );
+    }
+
+    #[test]
+    fn opt_in_checks_work_when_enabled() {
+        let settings = Settings {
+            block_forwards: true,
+            stop_words: vec!["казино".to_string()],
+            blocked_scripts: vec![meta::Script::Chinese],
+            ..Settings::default()
+        };
+        let forwarded = MessageFacts {
+            forwarded: true,
+            ..MessageFacts::default()
+        };
+        let cases = [
+            (forwarded, Reason::Forwarded),
+            (
+                MessageFacts::text("Кто играет в Казино по вечерам?"),
+                Reason::StopWord,
+            ),
+            (
+                MessageFacts::text("有 至副堡 VX来 帮我收米一天赚几k"),
+                Reason::BlockedScript,
+            ),
+        ];
+        for (facts, expected) in cases {
+            assert_eq!(reason_of(check_with(&settings, &facts)), Some(expected));
+        }
     }
 }

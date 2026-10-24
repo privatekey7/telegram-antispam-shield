@@ -24,3 +24,6 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+
+# Local tools, caches and temp files (owner rule: keep them in .tmp/)
+.tmp/

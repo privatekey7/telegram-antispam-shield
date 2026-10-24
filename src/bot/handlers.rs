@@ -1,4 +1,5 @@
-//! Update handlers: group messages, member joins and private commands.
+//! Update handlers: group messages and their edits, member joins and
+//! private commands.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -55,27 +56,48 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
         }
     }
 
-    // The group's own posts: anonymous admins, auto-forwards from the linked
-    // channel and comments made as that channel.
-    if msg.is_automatic_forward() || is_own_post(&bot, &state, &msg).await {
+    moderate(&bot, &state, &msg, false).await;
+    Ok(())
+}
+
+/// An edited group message is checked like a new one, so a member cannot
+/// post something harmless and later edit it into spam. Edits run no
+/// commands and count toward neither flood, repeats nor trust.
+pub async fn on_edited_message(bot: Bot, msg: Message, state: Arc<AppState>) -> ResponseResult<()> {
+    if !(msg.chat.is_group() || msg.chat.is_supergroup()) {
         return Ok(());
     }
-    let Some(sender) = actions::sender_of(&msg) else {
-        return Ok(()); // a bot
+    if chat_allowed(&bot, &state, msg.chat.id).await {
+        moderate(&bot, &state, &msg, true).await;
+    }
+    Ok(())
+}
+
+/// Check one group message (or an edit of one) and act on the decision.
+async fn moderate(bot: &Bot, state: &AppState, msg: &Message, edited: bool) {
+    // The group's own posts: anonymous admins, auto-forwards from the linked
+    // channel and comments made as that channel.
+    if msg.is_automatic_forward() || is_own_post(bot, state, msg).await {
+        return;
+    }
+    let Some(sender) = actions::sender_of(msg) else {
+        return; // a bot
     };
     if let Sender::User(user) = sender {
-        if state.settings.exempt_admins && chats::is_admin(&bot, &state, msg.chat.id, user.id).await
-        {
-            return Ok(());
+        if state.settings.exempt_admins && chats::is_admin(bot, state, msg.chat.id, user.id).await {
+            return;
         }
     }
 
     let text = msg.text().or_else(|| msg.caption());
 
-    // Flood rules see every message, including stickers and media without text.
-    if let Some(flood) = check_flood(&state, &msg, sender.id(), text) {
-        actions::punish_flood(&bot, &state, msg.chat.id, &sender, flood).await;
-        return Ok(());
+    // Flood rules see every new message, including stickers and media without
+    // text. An edit is not a new message: fixing a typo is not flooding.
+    if !edited {
+        if let Some(flood) = check_flood(state, msg, sender.id(), text) {
+            actions::punish_flood(bot, state, msg.chat.id, &sender, flood).await;
+            return;
+        }
     }
 
     // Only untrusted members are looked up in the CAS database.
@@ -85,7 +107,7 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
         _ => false,
     };
     let visible = text.unwrap_or_default();
-    let links = hidden_links(&msg, visible);
+    let links = hidden_links(msg, visible);
     let incoming = Incoming {
         chat: msg.chat.id.0,
         sender: sender.id(),
@@ -93,11 +115,12 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
         facts: MessageFacts {
             text: visible,
             hidden_links: &links,
-            inline_keyboard: has_inline_keyboard(&msg),
-            has_link: has_link_entity(&msg),
-            forwarded: is_forwarded(&msg),
+            inline_keyboard: has_inline_keyboard(msg),
+            has_link: has_link_entity(msg),
+            forwarded: is_forwarded(msg),
         },
         known_spammer,
+        edited,
     };
     let (decision, recent) = {
         let mut shield = state.shield();
@@ -114,7 +137,7 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
                 "member_trusted"
             );
         }
-        return Ok(());
+        return;
     };
     tracing::info!(
         chat = incoming.chat,
@@ -122,11 +145,12 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
         score = score,
         reason = reason.as_str(),
         also_deleted = decision.also_delete.len(),
+        edited,
         dry_run = state.settings.dry_run,
         "spam_detected"
     );
     if state.settings.dry_run {
-        return Ok(());
+        return;
     }
 
     let mut doomed = vec![msg.id.0];
@@ -139,8 +163,8 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
     doomed.sort_unstable();
     doomed.dedup();
     let deleted = doomed.len();
-    actions::delete_all(&bot, msg.chat.id, doomed).await;
-    actions::punish_spammer(&bot, state.settings.action, msg.chat.id, &sender).await;
+    actions::delete_all(bot, msg.chat.id, doomed).await;
+    actions::punish_spammer(bot, state.settings.action, msg.chat.id, &sender).await;
     let incident = Incident {
         chat: &msg.chat,
         sender: &sender,
@@ -148,9 +172,9 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
         reason,
         score,
         deleted,
+        edited,
     };
-    reports::send(&bot, &state, incident).await;
-    Ok(())
+    reports::send(bot, state, incident).await;
 }
 
 /// Joins seen as `chat_member` updates (large groups may hide join messages).

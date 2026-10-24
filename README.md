@@ -240,6 +240,10 @@ Incoming message
   newcomers. Trust is saved to `antispam.db` in `ANTISPAM_DATA_DIR` (a Docker
   volume), so a redeploy keeps it. The whole decision is one pure function,
   `Shield::inspect` (`src/shield.rs`).
+- **Edited messages** are checked like new ones, so a harmless message edited
+  into an ad is still caught. An edit is not a new message: it skips
+  anti-flood, is not recorded for the repeat and campaign rules, earns no
+  trust and runs no admin commands. Trusted members and admins stay exempt.
 - **Anti-flood** (`src/flood.rs`) keeps a short in-memory window of each user's
   recent messages per chat. It sees every message type, including stickers and
   media. Offence counters live in memory and reset when the bot restarts.

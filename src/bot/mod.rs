@@ -18,7 +18,7 @@ use telegram_antispam_shield::config::Settings;
 use telegram_antispam_shield::flood::FloodGuard;
 use telegram_antispam_shield::shield::Shield;
 
-pub use handlers::{on_chat_member, on_message};
+pub use handlers::{on_chat_member, on_edited_message, on_message};
 pub use polling::Poller;
 pub use reports::on_callback;
 

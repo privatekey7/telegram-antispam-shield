@@ -24,6 +24,10 @@ machine with Docker — a server, a Raspberry Pi, a NAS or a container platform.
   under text, inline buttons that only automation can attach, and spam posted
   on behalf of a channel.
 - 🇷🇺 🇬🇧 Trained on real Russian + English spam.
+- 🔎 **Shape checks** (ideas from tg-spam, defaults chosen on data): mixed
+  Cyrillic/Latin words, emoji walls, `@somebot`-only triggers, plus opt-in
+  stop words, blocked scripts, forward and link/mention limits. Known
+  spammers are looked up in the [CAS](https://cas.chat) database.
 - 🤝 **Trusts regulars:** after three normal messages a member's links and
   slang are no longer second-guessed by the model; newcomers posting links,
   slow repeaters and multi-account spam waves are caught instead.
@@ -139,6 +143,18 @@ Only `BOT_TOKEN` is required; everything else has sensible defaults.
 | `ANTISPAM_HISTORY_WINDOW_SECS` | `86400` | How long messages and joins are remembered for the rules above. |
 | `ANTISPAM_CLEANUP_ON_BAN` | `true` | When the action is `ban` or `mute`, also delete the spammer's other messages from the history window. |
 | `ANTISPAM_DATA_DIR` | `/data` in Docker | Folder for `antispam.db`, which keeps trusted members across restarts. Unset = memory only. |
+| `ANTISPAM_MODEL_MIN_CHARS` | `20` | Messages shorter than this and without links skip the model ("лс", "всем привет" carry too little signal). No recall loss on the test data. |
+| `ANTISPAM_BLOCK_BOT_MENTIONS` | `true` | Treat a message that is only a bot's `@username` (`@gjwgjglkewbot`), the trigger of business-bot spam, as spam. |
+| `ANTISPAM_MIXED_SCRIPT_WORDS` | `2` | Spam when this many words mix Cyrillic and Latin letters (`зaрaботок` with Latin `a`). `0` = off. |
+| `ANTISPAM_EMOJI_LIMIT` | `10` | Spam when a message has this many emoji. `0` = off. |
+| `ANTISPAM_CAS_ENABLED` | `true` | Look up untrusted members in the [Combot Anti-Spam](https://cas.chat) database of known spammers (on their messages and when they join). Sends their numeric user ID to `api.cas.chat`; results are cached for an hour; a slow or failing API counts as "not listed". |
+| `ANTISPAM_CAS_TIMEOUT_SECS` | `5` | Give up on a CAS lookup after this long. |
+| `ANTISPAM_BLOCKED_SCRIPTS` | _(none)_ | Comma-separated writing systems whose messages are spam: `chinese`, `japanese`, `korean`, `arabic`, `hebrew`, `devanagari`, `thai`, `greek`, `armenian`, `georgian`. |
+| `ANTISPAM_STOP_WORDS` | _(none)_ | Comma-separated phrases (case-insensitive) that make a message spam. |
+| `ANTISPAM_BLOCK_FORWARDS` | `false` | Treat forwards, quotes from other chats and stories from untrusted members as spam. |
+| `ANTISPAM_LINK_LIMIT` | `0` | Spam when a message has this many links. `0` = off. |
+| `ANTISPAM_MENTION_LIMIT` | `0` | Spam when a message has this many `@mentions`. `0` = off. |
+| `ANTISPAM_DELETE_SERVICE_MESSAGES` | `false` | Delete "X joined" / "X left" notices. |
 | `ANTISPAM_EXEMPT_ADMINS` | `true` | Never moderate group admins. Posts of the group itself (anonymous admins, the linked channel) are always exempt. |
 | `ANTISPAM_ADMIN_CACHE_TTL` | `3600` | Seconds to cache each group's admin list. |
 | `ANTISPAM_ALLOWED_CHATS` | _(all chats)_ | Comma-separated chat IDs the bot is allowed to moderate. When set, every other chat is ignored. **Recommended if your bot's username is public**, so strangers can't add it and use your hosting. |
@@ -167,13 +183,14 @@ Incoming message
    │
    ├─ 0. Anti-flood  → too many messages / same text repeated?    → delete burst + mute
    │
-   ├─ 1. History     → same text 3× a day, same promo from other accounts → spam
+   ├─ 1. History     → listed in CAS, same text 3× a day, same promo from other accounts → spam
    │
    ├─ 2. Rules       → buttons, hidden characters, invite links   → spam
    │     (trusted members stop here)
-   ├─ 3. Rules       → newcomer links, job offers                 → spam
+   ├─ 3. Rules       → newcomer links, stop words, scripts, @bot, mixed alphabets,
+   │                   emoji, forwards, link/mention limits, job offers → spam
    │
-   ├─ 4. ML model    → spam probability ≥ threshold?              → spam
+   ├─ 4. ML model    → 20+ chars or a link: spam probability ≥ threshold? → spam
    │
    └─ otherwise: allow
 ```

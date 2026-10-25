@@ -2,14 +2,16 @@
 //!
 //! Loads settings, the model and the optional state file, then dispatches
 //! updates to [`bot`]: group messages are checked for flood and spam (and
-//! admin commands), member joins feed the newcomer rule, report buttons
-//! undo or confirm decisions, and private chats get /start and /status.
+//! admin commands), edited messages for spam, member joins feed the
+//! newcomer rule, report buttons undo or confirm decisions, and private
+//! chats get /start and /status.
 
 mod bot;
 
 use std::path::Path;
 use std::sync::Arc;
 
+use teloxide::error_handlers::LoggingErrorHandler;
 use teloxide::prelude::*;
 use tracing_subscriber::EnvFilter;
 
@@ -42,10 +44,17 @@ fn open_store(dir: &Path) -> Option<Store> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // `telegram-antispam-shield healthcheck`: the container HEALTHCHECK.
+    if std::env::args().nth(1).as_deref() == Some("healthcheck") {
+        std::process::exit(if bot::health::check() { 0 } else { 1 });
+    }
     let _ = dotenvy::dotenv();
     init_logging();
 
-    let settings = Settings::from_env();
+    let settings = Settings::from_env()?;
+    for warning in settings.access_warnings() {
+        tracing::warn!("{warning}");
+    }
     let model = Model::load_default()?;
     let store = settings.data_dir.as_deref().and_then(open_store);
     tracing::info!(
@@ -69,8 +78,10 @@ async fn main() -> anyhow::Result<()> {
     // The handler tree also tells Telegram which update types to send.
     let handler = dptree::entry()
         .branch(Update::filter_message().endpoint(bot::on_message))
+        .branch(Update::filter_edited_message().endpoint(bot::on_edited_message))
         .branch(Update::filter_chat_member().endpoint(bot::on_chat_member))
         .branch(Update::filter_callback_query().endpoint(bot::on_callback));
+    let poller = bot::Poller::new(bot.clone()).await;
     let mut dispatcher = Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![state])
         .enable_ctrlc_handler()
@@ -94,7 +105,12 @@ async fn main() -> anyhow::Result<()> {
     });
 
     tracing::info!("bot_started");
-    dispatcher.dispatch().await;
+    dispatcher
+        .dispatch_with_listener(
+            poller,
+            LoggingErrorHandler::with_custom_text("update_listener_error"),
+        )
+        .await;
     tracing::info!("bot_stopped");
     Ok(())
 }

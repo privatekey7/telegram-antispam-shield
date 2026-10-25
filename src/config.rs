@@ -193,13 +193,26 @@ impl Settings {
         self.report_chat.or(self.owner_id)
     }
 
-    /// Whether `user_id` may see private-chat status output.
-    /// With no owner configured, anyone may.
+    /// Whether `user_id` is the configured owner, who may see `/status`.
+    /// With no owner configured, nobody is.
     pub fn is_owner(&self, user_id: i64) -> bool {
-        match self.owner_id {
-            None => true,
-            Some(owner) => owner == user_id,
+        self.owner_id == Some(user_id)
+    }
+
+    /// Risky but valid choices worth a warning at startup.
+    pub fn access_warnings(&self) -> Vec<&'static str> {
+        let mut warnings = Vec::new();
+        if self.allowed_chats.is_none() {
+            warnings.push(
+                "ANTISPAM_ALLOWED_CHATS is not set: anyone can add the bot to a group, \
+                 use your hosting, send you reports and fill the bot's total sample \
+                 budget. Set it to your group IDs.",
+            );
         }
+        if self.owner_id.is_none() {
+            warnings.push("ANTISPAM_OWNER_ID is not set: /status shows nothing to anyone.");
+        }
+        warnings
     }
 }
 
@@ -238,9 +251,12 @@ fn env_bool(key: &str, default: bool) -> bool {
 }
 
 impl Settings {
-    pub fn from_env() -> Self {
+    /// Read the settings. Access-control values (`ANTISPAM_ALLOWED_CHATS`,
+    /// `ANTISPAM_OWNER_ID`) fail closed: a typo stops the bot with an error
+    /// instead of silently opening it to every chat.
+    pub fn from_env() -> Result<Self> {
         let d = Settings::default();
-        Settings {
+        Ok(Settings {
             action: Action::parse(&env::var("ANTISPAM_ACTION").unwrap_or_default()),
             dry_run: env_bool("ANTISPAM_DRY_RUN", d.dry_run),
             threshold: env::var("ANTISPAM_THRESHOLD")
@@ -259,11 +275,9 @@ impl Settings {
             ),
             exempt_admins: env_bool("ANTISPAM_EXEMPT_ADMINS", d.exempt_admins),
             admin_cache_ttl_secs: env_number("ANTISPAM_ADMIN_CACHE_TTL", d.admin_cache_ttl_secs),
-            allowed_chats: parse_id_set(env::var("ANTISPAM_ALLOWED_CHATS").ok()),
+            allowed_chats: parse_id_set(env::var("ANTISPAM_ALLOWED_CHATS").ok())?,
             leave_unknown_chats: env_bool("ANTISPAM_LEAVE_UNKNOWN_CHATS", d.leave_unknown_chats),
-            owner_id: env::var("ANTISPAM_OWNER_ID")
-                .ok()
-                .and_then(|v| v.trim().parse::<i64>().ok()),
+            owner_id: parse_owner_id(env::var("ANTISPAM_OWNER_ID").ok())?,
             flood: flood_from_env(),
             trust: TrustConfig {
                 after_messages: env_number("ANTISPAM_TRUST_AFTER", d.trust.after_messages),
@@ -315,7 +329,7 @@ impl Settings {
             report_chat: env::var("ANTISPAM_REPORT_CHAT")
                 .ok()
                 .and_then(|v| v.trim().parse::<i64>().ok()),
-        }
+        })
     }
 }
 
@@ -375,18 +389,41 @@ fn parse_list(raw: Option<String>) -> Vec<String> {
 }
 
 /// Parse a list of chat IDs separated by commas, spaces, semicolons or newlines.
-/// Returns `None` when unset or empty, meaning "all chats allowed".
-fn parse_id_set(raw: Option<String>) -> Option<HashSet<i64>> {
-    let raw = raw?;
-    let set: HashSet<i64> = raw
-        .split([',', ' ', ';', '\n', '\t'])
-        .filter_map(|p| p.trim().parse::<i64>().ok())
-        .collect();
-    if set.is_empty() {
-        None
-    } else {
-        Some(set)
-    }
+/// Returns `None` when unset or blank, meaning "all chats allowed". Any entry
+/// that is not a number (`@mygroup`, a Unicode minus) is an error, so a typo
+/// cannot open the bot to every chat.
+fn parse_id_set(raw: Option<String>) -> Result<Option<HashSet<i64>>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let set = raw
+        .split([',', ' ', ';', '\n', '\t', '\r'])
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            p.parse::<i64>().map_err(|_| {
+                anyhow!(
+                    "ANTISPAM_ALLOWED_CHATS: {p:?} is not a numeric chat ID \
+                     (groups look like -1001234567890; usernames are not accepted)"
+                )
+            })
+        })
+        .collect::<Result<HashSet<i64>>>()?;
+    Ok((!set.is_empty()).then_some(set))
+}
+
+/// Parse `ANTISPAM_OWNER_ID`: unset or blank means no owner; anything else
+/// must be a numeric user ID.
+fn parse_owner_id(raw: Option<String>) -> Result<Option<i64>> {
+    let Some(raw) = raw.filter(|v| !v.trim().is_empty()) else {
+        return Ok(None);
+    };
+    raw.trim().parse::<i64>().map(Some).map_err(|_| {
+        anyhow!(
+            "ANTISPAM_OWNER_ID: {:?} is not a numeric user ID (get yours from @userinfobot)",
+            raw.trim()
+        )
+    })
 }
 
 /// The bot token, from `BOT_TOKEN` (preferred) or `TELOXIDE_TOKEN`.
@@ -410,15 +447,95 @@ mod tests {
 
     #[test]
     fn id_set_parsing() {
-        assert_eq!(parse_id_set(None), None);
-        assert_eq!(parse_id_set(Some("   ".into())), None);
-        assert_eq!(parse_id_set(Some("not_a_number".into())), None);
+        // Arrange
+        let raw = Some("-1001234, -1005678 ;42\r\n".to_string());
 
-        let parsed = parse_id_set(Some("-1001234, -1005678 ;42".into())).unwrap();
+        // Act
+        let parsed = parse_id_set(raw).unwrap().unwrap();
+
+        // Assert
         assert!(parsed.contains(&-1001234));
         assert!(parsed.contains(&-1005678));
         assert!(parsed.contains(&42));
         assert_eq!(parsed.len(), 3);
+    }
+
+    #[test]
+    fn unset_or_blank_allowlist_allows_every_chat() {
+        // Arrange
+        let unset = None;
+        let blank = Some("   ".to_string());
+
+        // Act
+        let from_unset = parse_id_set(unset).unwrap();
+        let from_blank = parse_id_set(blank).unwrap();
+
+        // Assert
+        assert_eq!(from_unset, None);
+        assert_eq!(from_blank, None);
+    }
+
+    #[test]
+    fn invalid_allowlist_entry_is_an_error() {
+        // Arrange
+        let typos = [
+            "not_a_number",
+            "@mygroup",
+            "-1001234,@mygroup",
+            "\u{2212}1001234", // Unicode minus sign
+        ];
+
+        for raw in typos {
+            // Act
+            let parsed = parse_id_set(Some(raw.to_string()));
+
+            // Assert
+            let error = parsed.expect_err(raw).to_string();
+            assert!(error.contains("ANTISPAM_ALLOWED_CHATS"), "{error}");
+        }
+    }
+
+    #[test]
+    fn owner_id_parsing() {
+        // Arrange
+        let valid = Some(" 777 ".to_string());
+        let blank = Some(String::new());
+        let invalid = Some("@me".to_string());
+
+        // Act
+        let from_valid = parse_owner_id(valid).unwrap();
+        let from_blank = parse_owner_id(blank).unwrap();
+        let from_unset = parse_owner_id(None).unwrap();
+        let from_invalid = parse_owner_id(invalid);
+
+        // Assert
+        assert_eq!(from_valid, Some(777));
+        assert_eq!(from_blank, None);
+        assert_eq!(from_unset, None);
+        assert!(from_invalid
+            .unwrap_err()
+            .to_string()
+            .contains("ANTISPAM_OWNER_ID"));
+    }
+
+    #[test]
+    fn open_access_is_warned_about() {
+        // Arrange
+        let open = Settings::default();
+        let closed = Settings {
+            allowed_chats: Some([-1001234].into_iter().collect()),
+            owner_id: Some(777),
+            ..Settings::default()
+        };
+
+        // Act
+        let open_warnings = open.access_warnings();
+        let closed_warnings = closed.access_warnings();
+
+        // Assert
+        assert_eq!(open_warnings.len(), 2);
+        assert!(open_warnings[0].contains("ANTISPAM_ALLOWED_CHATS"));
+        assert!(closed_warnings.is_empty());
     }
 
     #[test]
@@ -463,17 +580,34 @@ mod tests {
     }
 
     #[test]
-    fn owner_logic() {
-        // No owner => anyone is "owner" for status.
-        let mut s = Settings {
+    fn without_an_owner_nobody_is_the_owner() {
+        // Arrange
+        let s = Settings {
             owner_id: None,
             ..Settings::default()
         };
-        assert!(s.is_owner(777));
 
-        // With an owner => only that user.
-        s.owner_id = Some(777);
-        assert!(s.is_owner(777));
-        assert!(!s.is_owner(778));
+        // Act
+        let stranger = s.is_owner(777);
+
+        // Assert
+        assert!(!stranger);
+    }
+
+    #[test]
+    fn with_an_owner_only_that_user_is_the_owner() {
+        // Arrange
+        let s = Settings {
+            owner_id: Some(777),
+            ..Settings::default()
+        };
+
+        // Act
+        let owner = s.is_owner(777);
+        let stranger = s.is_owner(778);
+
+        // Assert
+        assert!(owner);
+        assert!(!stranger);
     }
 }

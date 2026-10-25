@@ -6,25 +6,47 @@
 //! * `/warn` — delete it and warn the author; `ANTISPAM_WARN_LIMIT` warnings
 //!   within a month mean a ban.
 //!
-//! These are explicit admin actions, so they work in dry-run mode too.
+//! These are explicit admin actions, so they work in dry-run mode too. They
+//! need the "Ban users" right (`/warn` only "Delete messages" when warnings
+//! never ban); anonymous admins are refused (see `access`).
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use teloxide::prelude::*;
 
+use telegram_antispam_shield::access::{Access, AdminAction};
 use telegram_antispam_shield::config::Action;
 
 use super::actions::{self, Sender};
-use super::AppState;
+use super::{rights, AppState};
 
 /// How long a warning notice stays in the chat.
 const WARNING_NOTICE_TTL: Duration = Duration::from_secs(60);
+/// How long a hint about a misused command stays in the chat.
+const HINT_TTL: Duration = Duration::from_secs(20);
+
+const NO_TARGET_HINT: &str = "↩️ Ответьте этой командой на сообщение нарушителя. \
+Сообщения, отправленные до того, как группа стала супергруппой, боту недоступны: \
+удалите их вручную. · Reply to the offending message with this command. Messages \
+from before the group became a supergroup are out of reach: delete them by hand.";
+const BOT_TARGET_HINT: &str = "🤖 Команды не действуют на ботов. · Commands do not apply to bots.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     Spam,
     Ban,
     Warn,
+}
+
+impl Command {
+    /// The admin action, for the rights check.
+    pub fn action(self) -> AdminAction {
+        match self {
+            Command::Spam => AdminAction::Spam,
+            Command::Ban => AdminAction::Ban,
+            Command::Warn => AdminAction::Warn,
+        }
+    }
 }
 
 /// The command in `text`, if it is one of ours. `/spam@OtherBot` is not.
@@ -45,17 +67,22 @@ pub fn parse(text: &str, bot_username: &str) -> Option<Command> {
     }
 }
 
-/// Carry out `command` sent by an admin as `msg`.
+/// Carry out `command` sent as `msg` by someone the rights check allowed.
 pub async fn run(bot: &Bot, state: &AppState, msg: &Message, command: Command) {
     let chat = msg.chat.id;
     // The command itself is noise once handled.
     actions::delete_all(bot, chat, [msg.id.0]).await;
 
+    // Without a hint a misused command just vanishes and the admin is left
+    // guessing. A reply to a message from another chat (including the group
+    // before it became a supergroup) also arrives without a target.
     let Some(target) = msg.reply_to_message() else {
-        return; // nothing to act on
+        actions::send_temporary(bot, chat, NO_TARGET_HINT.to_owned(), HINT_TTL).await;
+        return;
     };
     let Some(sender) = actions::sender_of(target) else {
-        return; // a bot or the group itself
+        actions::send_temporary(bot, chat, BOT_TARGET_HINT.to_owned(), HINT_TTL).await;
+        return;
     };
     let text = target
         .text()
@@ -92,6 +119,15 @@ pub async fn run(bot: &Bot, state: &AppState, msg: &Message, command: Command) {
     }
 }
 
+/// Turn down a command from an admin without the right it needs, or from an
+/// anonymous admin: delete it and say why for a few seconds.
+pub async fn refuse(bot: &Bot, msg: &Message, access: Access) {
+    tracing::info!(chat = msg.chat.id.0, access = ?access, "admin_command_refused");
+    actions::delete_all(bot, msg.chat.id, [msg.id.0]).await;
+    let text = format!("🔒 {}", rights::refusal_text(access));
+    actions::send_temporary(bot, msg.chat.id, text, HINT_TTL).await;
+}
+
 /// Tell the chat about a warning; the notice deletes itself after a minute.
 async fn warn_notice(
     bot: &Bot,
@@ -101,7 +137,7 @@ async fn warn_notice(
     count: u32,
     banned: bool,
 ) {
-    let who = sender.display_name();
+    let who = sender.notice_name();
     let limit = state.settings.warn_limit;
     // Plain text (no parse mode), so user names cannot inject markup.
     let notice = if banned {

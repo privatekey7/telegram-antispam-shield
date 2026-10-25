@@ -6,6 +6,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-25
+
+### Upgrade notes
+- The database schema moves to version 3 (per-chat samples). v0.2.0 cannot
+  run on it: back up `antispam.db` before upgrading, and restore that copy
+  to roll back (ADR 0011). Samples learned before the upgrade are set aside
+  and no longer applied.
+- Startup now fails if `ANTISPAM_ALLOWED_CHATS` or `ANTISPAM_OWNER_ID`
+  contains an entry that is not a number.
+
+### Fixed
+- Messages that reply to a text message from another chat lost their text in
+  teloxide and were neither moderated nor read as commands. This includes
+  replies to messages from before the group became a supergroup. The bot now
+  polls Telegram itself and repairs such updates before parsing them (ADR
+  0010). Any text that is still lost is logged as `unreadable_message`.
+- `/spam`, `/ban` and `/warn` without a reply, or replying to a message out of
+  reach, no longer vanish silently: the bot shows a short hint.
+
+### Security
+- Learned samples (`/spam`, **Not spam**, **Ban** in a report) now apply only
+  in the chat where they were taught. Before, an admin of any chat with the
+  bot could make it delete messages and ban people in other chats, and push
+  out the samples other chats had learned (ADR 0011).
+- Learned samples are bounded: only the first 800 chars and 128 distinct words
+  of a text are kept, a text with the same words is stored once, and each chat
+  keeps at most 1,000 samples per kind (5,000 in total, taken first from the
+  chat holding the most). Before, repeated `/spam` on one long message could
+  exhaust the container's memory and crash the bot on every restart.
+- Upgrading sets the old shared samples aside (table `samples_unscoped`, never
+  loaded): every chat starts with no learned samples. ADR 0011 shows how to
+  copy them into a chat by hand.
+- Edited messages are now moderated. Before, a member could post a harmless
+  text and later edit it into spam unseen, since the bot did not even
+  subscribe to `edited_message` updates. An edit is checked like a new
+  message, and a report marks it as edited. It does not count toward
+  anti-flood, repeats or trust, and cannot run admin commands.
+- The Deploy workflow no longer deploys a pull request from a fork whose
+  branch is named `main`. Before, such a pull request passed the
+  `branches: [main]` filter: once `DEPLOY_ENABLED` was set, its code was built
+  and rolled out to the server that holds `BOT_TOKEN`. Deploys now run only
+  for green CI on a push to `main` of the same repository, or a manual run
+  from `main`. The commit must be on `origin/main`. Job tokens drop to the
+  minimum, and pull request runs can no longer cancel a queued deploy.
+  `docs/auto-deploy.md` explains the check and recommends required reviewers
+  on the `production` environment.
+- `deploy.sh` checks the whole image tag instead of line by line: a tag with
+  a newline (`sha-<sha>\nIMAGE=...`) passed the check and wrote extra lines
+  into `.env`, which got around the SSH forced command. A failed pull or
+  start now rolls back instead of leaving `.env` on the new tag.
+  `deploy/test-deploy.sh` covers both.
+- Admin commands and report buttons now check the admin's rights (ADR 0003
+  addendum). `/spam`, `/ban`, the **Ban** button and **Not spam** need the
+  **Ban users** right (`can_restrict_members`); `/warn` needs it too while
+  warnings can end in a ban, otherwise **Delete messages**. Before, any admin,
+  even one with only a title, could make the bot ban.
+- Anonymous admins (writing as the group) can no longer use commands, because
+  their rights cannot be checked. They get a hint instead.
+- The bot confirms an admin's rights with Telegram before acting, so a
+  demoted admin loses access at once instead of after the admin cache TTL.
+- `ANTISPAM_ALLOWED_CHATS` or `ANTISPAM_OWNER_ID` with an entry that is not a
+  number now stops the bot at startup. Before, a typo such as `@mygroup`
+  silently allowed every chat.
+- Without `ANTISPAM_OWNER_ID`, `/status` no longer shows the configuration to
+  anyone; it only says that the bot is running.
+- Each chat sends at most 20 spam reports per 10 minutes, so one chat cannot
+  flood the owner or push other reports out of storage.
+- The bot warns at startup when `ANTISPAM_ALLOWED_CHATS` or
+  `ANTISPAM_OWNER_ID` is unset, and the docs now strongly recommend the
+  allowlist.
+- `ANTISPAM_BLOCK_FORWARDS` again catches replies that quote a text message
+  from another chat: the poller remembers which messages lost such a quote
+  during repair.
+- Admin checks no longer hold the shared chat cache lock during Bot API
+  calls, and a failed admin lookup is not retried for 60 s.
+- Group notices (`/warn`, flood mutes) no longer repeat names verbatim:
+  words that look like links or mentions are dropped and the name is cut to
+  32 characters (`id N` if nothing is left), so ads in names are not
+  amplified. Reports mark everything from the reported chat (title, name in
+  «», each line of the text behind `│`) and never show link previews.
+- Deletes, bans and mutes are retried once after Telegram's `retry_after`
+  (up to 30 s) instead of being lost during a raid.
+- The image has a `HEALTHCHECK` (`telegram-antispam-shield healthcheck`, fed
+  by a heartbeat after each `getUpdates`); compose.yaml mounts a tmpfs on
+  `/tmp` for it.
+- Release images carry an SPDX SBOM and SLSA provenance and are signed with
+  keyless cosign; base images are pinned by digest. Verification steps are in
+  docs/hosting.md.
+- CI checks the SHA-256 of the gitleaks and actionlint downloads instead of
+  running a remote install script, and declares `permissions: contents: read`.
+- The CAS cache can no longer grow past 10,000 entries.
+- Docs no longer put the bot token in browser URLs or curl arguments, no
+  longer suggest sending it to the assistant, and use `restrict` in the deploy
+  key's `authorized_keys` line.
+- Once the total sample budget (5,000 per kind) is full, the chat that adds
+  a sample drops its own oldest, so other chats can no longer shrink a
+  chat's samples. Only a chat's first sample is taken from the largest chat.
+- Every `getUpdates` carries the allowed-updates list. Before, a failed
+  first call after an upgrade left edited messages unmoderated until the
+  next restart.
+- After a 429 only one handler waits, for at most 5 s; other calls give up
+  at once, so a raid in one chat cannot stall moderation in all of them.
+- Each schema migration commits together with its version, so a crash
+  midway no longer leaves a half-built database.
+
 ## [0.2.0] - 2026-10-24
 
 ### Added
@@ -142,6 +247,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-stage, non-root Dockerfile and Railway deploy config.
 - GitHub Actions CI: rustfmt, clippy, tests, `cargo audit`, gitleaks.
 
-[Unreleased]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/privatekey7/telegram-antispam-shield/releases/tag/v0.1.0

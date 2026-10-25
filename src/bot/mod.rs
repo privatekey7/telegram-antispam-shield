@@ -8,7 +8,10 @@ mod cas;
 mod chats;
 mod commands;
 mod handlers;
+pub mod health;
+mod polling;
 mod reports;
+mod rights;
 
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -17,7 +20,8 @@ use telegram_antispam_shield::config::Settings;
 use telegram_antispam_shield::flood::FloodGuard;
 use telegram_antispam_shield::shield::Shield;
 
-pub use handlers::{on_chat_member, on_message};
+pub use handlers::{on_chat_member, on_edited_message, on_message};
+pub use polling::Poller;
 pub use reports::on_callback;
 
 /// How often expired flood and history entries are dropped.
@@ -34,6 +38,8 @@ pub struct AppState {
     flood: Mutex<FloodGuard>,
     chats: tokio::sync::Mutex<chats::ChatCache>,
     cas: cas::Cas,
+    /// Held only for synchronous checks, never across an `.await`.
+    report_budget: Mutex<reports::ReportBudget>,
 }
 
 impl AppState {
@@ -45,6 +51,7 @@ impl AppState {
             shield: Mutex::new(shield),
             chats: tokio::sync::Mutex::new(chats::ChatCache::default()),
             cas: cas::Cas::new(settings.cas.clone()),
+            report_budget: Mutex::new(reports::ReportBudget::default()),
             settings,
         }
     }
@@ -57,6 +64,10 @@ impl AppState {
 
     fn flood(&self) -> MutexGuard<'_, FloodGuard> {
         self.flood.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn report_budget(&self) -> MutexGuard<'_, reports::ReportBudget> {
+        self.report_budget.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 

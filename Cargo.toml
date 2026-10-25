@@ -1,6 +1,6 @@
 [package]
 name = "telegram-antispam-shield"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.88"
 description = "Lightweight Telegram anti-spam bot (RU/EN) with a small embedded ML model."
@@ -30,11 +30,12 @@ serde = { version = "1", features = ["derive"] }
 # Already pulled in by teloxide; needed for mute end times (`until_date`).
 chrono = { version = "0.4", default-features = false }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+# Already pulled in by teloxide; the poller reads raw updates (src/bot/polling.rs).
+futures = { version = "0.3", default-features = false, features = ["std"] }
+serde_json = "1.0.154"
 
 [profile.release]
 # Keep the release build lightweight and reliable on small CI/PaaS builders
 # (aggressive LTO + single codegen unit can run out of memory there).
 strip = true
 
-[dev-dependencies]
-serde_json = "1.0.154"

@@ -1,4 +1,5 @@
-//! Update handlers: group messages, member joins and private commands.
+//! Update handlers: group messages and their edits, member joins and
+//! private commands.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -6,6 +7,7 @@ use std::time::Instant;
 use teloxide::prelude::*;
 use teloxide::types::{ChatMemberUpdated, MessageEntityKind, MessageKind, User};
 
+use telegram_antispam_shield::access::Access;
 use telegram_antispam_shield::config::Action;
 use telegram_antispam_shield::flood::{FloodVerdict, IncomingMessage};
 use telegram_antispam_shield::moderation::{MessageFacts, Verdict};
@@ -13,13 +15,17 @@ use telegram_antispam_shield::shield::Incoming;
 
 use super::actions::{self, FloodAction, Sender};
 use super::reports::{self, Incident};
-use super::{chats, commands, AppState};
+use super::{chats, commands, polling, rights, AppState};
 
 const START_TEXT: &str = "🛡 Anti-Spam Shield is running.\n\n\
 Add me to your group and grant the \"Delete messages\" admin right. \
 I will automatically remove spam in Russian and English.\n\n\
-Private: /status (owner). In a group, reply to a message with \
-/spam (delete, ban, learn), /ban or /warn.";
+Private: /status (owner). In a group, admins with the \"Ban users\" right \
+reply to a message with /spam (delete, ban, learn), /ban or /warn.";
+
+/// What `/status` tells anyone but the owner: nothing about the configuration.
+const STATUS_FOR_OTHERS: &str = "🛡 Anti-Spam Shield is running. \
+/status details are only for the bot's owner (ANTISPAM_OWNER_ID).";
 
 pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> ResponseResult<()> {
     if msg.chat.is_private() {
@@ -49,33 +55,68 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
         .text()
         .and_then(|t| commands::parse(t, &state.bot_username))
     {
-        if is_commander(&bot, &state, &msg).await {
-            commands::run(&bot, &state, &msg, command).await;
-            return Ok(());
+        let as_group = msg
+            .sender_chat
+            .as_ref()
+            .is_some_and(|c| c.id == msg.chat.id);
+        let action = command.action();
+        let from = msg.from.as_ref();
+        match rights::authorize(&bot, &state, msg.chat.id, from, as_group, action).await {
+            Access::Allowed => {
+                commands::run(&bot, &state, &msg, command).await;
+                return Ok(());
+            }
+            // Not an admin: an ordinary message, moderated below.
+            Access::NotAdmin => {}
+            refused => {
+                commands::refuse(&bot, &msg, refused).await;
+                return Ok(());
+            }
         }
     }
 
-    // The group's own posts: anonymous admins, auto-forwards from the linked
-    // channel and comments made as that channel.
-    if msg.is_automatic_forward() || is_own_post(&bot, &state, &msg).await {
+    moderate(&bot, &state, &msg, false).await;
+    Ok(())
+}
+
+/// An edited group message is checked like a new one, so a member cannot
+/// post something harmless and later edit it into spam. Edits run no
+/// commands and count toward neither flood, repeats nor trust.
+pub async fn on_edited_message(bot: Bot, msg: Message, state: Arc<AppState>) -> ResponseResult<()> {
+    if !(msg.chat.is_group() || msg.chat.is_supergroup()) {
         return Ok(());
     }
-    let Some(sender) = actions::sender_of(&msg) else {
-        return Ok(()); // a bot
+    if chat_allowed(&bot, &state, msg.chat.id).await {
+        moderate(&bot, &state, &msg, true).await;
+    }
+    Ok(())
+}
+
+/// Check one group message (or an edit of one) and act on the decision.
+async fn moderate(bot: &Bot, state: &AppState, msg: &Message, edited: bool) {
+    // The group's own posts: anonymous admins, auto-forwards from the linked
+    // channel and comments made as that channel.
+    if msg.is_automatic_forward() || is_own_post(bot, state, msg).await {
+        return;
+    }
+    let Some(sender) = actions::sender_of(msg) else {
+        return; // a bot
     };
     if let Sender::User(user) = sender {
-        if state.settings.exempt_admins && chats::is_admin(&bot, &state, msg.chat.id, user.id).await
-        {
-            return Ok(());
+        if state.settings.exempt_admins && chats::is_admin(bot, state, msg.chat.id, user.id).await {
+            return;
         }
     }
 
     let text = msg.text().or_else(|| msg.caption());
 
-    // Flood rules see every message, including stickers and media without text.
-    if let Some(flood) = check_flood(&state, &msg, sender.id(), text) {
-        actions::punish_flood(&bot, &state, msg.chat.id, &sender, flood).await;
-        return Ok(());
+    // Flood rules see every new message, including stickers and media without
+    // text. An edit is not a new message: fixing a typo is not flooding.
+    if !edited {
+        if let Some(flood) = check_flood(state, msg, sender.id(), text) {
+            actions::punish_flood(bot, state, msg.chat.id, &sender, flood).await;
+            return;
+        }
     }
 
     // Only untrusted members are looked up in the CAS database.
@@ -85,7 +126,7 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
         _ => false,
     };
     let visible = text.unwrap_or_default();
-    let links = hidden_links(&msg, visible);
+    let links = hidden_links(msg, visible);
     let incoming = Incoming {
         chat: msg.chat.id.0,
         sender: sender.id(),
@@ -93,11 +134,12 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
         facts: MessageFacts {
             text: visible,
             hidden_links: &links,
-            inline_keyboard: has_inline_keyboard(&msg),
-            has_link: has_link_entity(&msg),
-            forwarded: is_forwarded(&msg),
+            inline_keyboard: has_inline_keyboard(msg),
+            has_link: has_link_entity(msg),
+            forwarded: is_forwarded(msg),
         },
         known_spammer,
+        edited,
     };
     let (decision, recent) = {
         let mut shield = state.shield();
@@ -114,7 +156,7 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
                 "member_trusted"
             );
         }
-        return Ok(());
+        return;
     };
     tracing::info!(
         chat = incoming.chat,
@@ -122,11 +164,12 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
         score = score,
         reason = reason.as_str(),
         also_deleted = decision.also_delete.len(),
+        edited,
         dry_run = state.settings.dry_run,
         "spam_detected"
     );
     if state.settings.dry_run {
-        return Ok(());
+        return;
     }
 
     let mut doomed = vec![msg.id.0];
@@ -139,8 +182,8 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
     doomed.sort_unstable();
     doomed.dedup();
     let deleted = doomed.len();
-    actions::delete_all(&bot, msg.chat.id, doomed).await;
-    actions::punish_spammer(&bot, state.settings.action, msg.chat.id, &sender).await;
+    actions::delete_all(bot, msg.chat.id, doomed).await;
+    actions::punish_spammer(bot, state.settings.action, msg.chat.id, &sender).await;
     let incident = Incident {
         chat: &msg.chat,
         sender: &sender,
@@ -148,9 +191,9 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
         reason,
         score,
         deleted,
+        edited,
     };
-    reports::send(&bot, &state, incident).await;
-    Ok(())
+    reports::send(bot, state, incident).await;
 }
 
 /// Joins seen as `chat_member` updates (large groups may hide join messages).
@@ -203,14 +246,18 @@ async fn on_private_message(bot: &Bot, msg: &Message, state: &AppState) -> Respo
     if text.starts_with("/start") || text.starts_with("/help") {
         bot.send_message(msg.chat.id, START_TEXT).await?;
     } else if text.starts_with("/status") {
-        // Only the configured owner may see the bot's configuration.
+        // Only the configured owner may see the bot's configuration: the
+        // threshold and limits would help a spammer tune around them.
         let from_owner = msg
             .from
             .as_ref()
             .is_some_and(|u| state.settings.is_owner(u.id.0 as i64));
-        if from_owner {
-            bot.send_message(msg.chat.id, status_text(state)).await?;
-        }
+        let text = if from_owner {
+            status_text(state)
+        } else {
+            STATUS_FOR_OTHERS.to_owned()
+        };
+        bot.send_message(msg.chat.id, text).await?;
     }
     Ok(())
 }
@@ -230,23 +277,6 @@ async fn chat_allowed(bot: &Bot, state: &AppState, chat: ChatId) -> bool {
         tracing::debug!(chat = chat.0, "ignored_unauthorized_chat");
     }
     false
-}
-
-/// Whether `msg` comes from someone allowed to run admin commands: an
-/// admin, the owner, or an anonymous admin posting as the group.
-async fn is_commander(bot: &Bot, state: &AppState, msg: &Message) -> bool {
-    if msg
-        .sender_chat
-        .as_ref()
-        .is_some_and(|c| c.id == msg.chat.id)
-    {
-        return true;
-    }
-    let Some(user) = msg.from.as_ref() else {
-        return false;
-    };
-    state.settings.owner_id == Some(user.id.0 as i64)
-        || chats::is_admin(bot, state, msg.chat.id, user.id).await
 }
 
 /// Whether the group itself posted `msg`: as an anonymous admin (the sender
@@ -322,7 +352,7 @@ fn is_forwarded(msg: &Message) -> bool {
     let external_reply = match &msg.kind {
         MessageKind::Common(common) => common.external_reply.is_some(),
         _ => false,
-    };
+    } || polling::quoted_another_chat(msg.chat.id.0, msg.id.0);
     msg.forward_origin().is_some() || external_reply || msg.story().is_some()
 }
 

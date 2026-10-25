@@ -88,6 +88,11 @@ impl Cas {
             let ttl = self.config.cache_ttl;
             cache.retain(|_, (_, at)| at.elapsed() < ttl);
         }
+        if cache.len() >= MAX_CACHED {
+            // Still full of fresh results (a raid of new accounts): start
+            // over rather than grow without bound. Lookups are only repeated.
+            cache.clear();
+        }
         cache.insert(user.0, (listed, Instant::now()));
     }
 }
@@ -103,6 +108,16 @@ mod tests {
 
         assert!(serde_json::from_str::<CheckResponse>(listed).unwrap().ok);
         assert!(!serde_json::from_str::<CheckResponse>(unlisted).unwrap().ok);
+    }
+
+    #[test]
+    fn cache_never_grows_past_its_cap() {
+        let cas = Cas::new(CasConfig::default());
+        for user in 0..(MAX_CACHED as u64 + 10) {
+            cas.remember(UserId(user), false);
+        }
+        let cached = cas.cache.lock().unwrap().len();
+        assert!(cached <= MAX_CACHED, "{cached} cached");
     }
 
     #[tokio::test]

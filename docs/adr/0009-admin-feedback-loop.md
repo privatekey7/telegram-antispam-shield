@@ -1,6 +1,7 @@
 # 9. Admin feedback: commands, learned samples and reports
 
-- Status: accepted
+- Status: accepted; samples amended by [ADR 0011](0011-per-chat-bounded-samples.md)
+  (per chat, with size limits)
 - Date: 2026-10-24
 
 ## Context

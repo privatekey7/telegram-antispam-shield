@@ -17,7 +17,9 @@
 //! * [`shield`]     — the decision engine tying the above together.
 //! * [`flood`]      — per-user message rate and repeat detection.
 //! * [`config`]     — runtime settings read from environment variables.
+//! * [`access`]     — the admin rights each admin action needs.
 
+pub mod access;
 pub mod config;
 pub mod features;
 pub mod flood;

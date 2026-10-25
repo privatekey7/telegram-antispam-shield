@@ -9,22 +9,72 @@
 //! * "Ban" (when the action only deletes): ban, clean up, and learn the
 //!   text as spam.
 //!
-//! Only the owner or an admin of the reported chat may press them.
+//! Only the owner or an admin of the reported chat with the "Ban users" right
+//! may press them: both buttons ban or unban.
+//!
+//! Reports come only from chats that pass `ANTISPAM_ALLOWED_CHATS` (every
+//! chat when it is unset), and each chat gets at most [`REPORTS_PER_WINDOW`]
+//! reports per [`REPORT_WINDOW`], so one noisy (or hostile) chat cannot flood
+//! the owner. Many chats still can; only the allowlist stops that.
+
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use teloxide::prelude::*;
 use teloxide::types::{
-    CallbackQuery, ChatId, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, UserId,
+    CallbackQuery, ChatId, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup,
+    LinkPreviewOptions, UserId,
 };
 
+use telegram_antispam_shield::access::{Access, AdminAction};
 use telegram_antispam_shield::config::Action;
 use telegram_antispam_shield::moderation::Reason;
 use telegram_antispam_shield::store::ReportRecord;
 
 use super::actions::{self, Sender};
-use super::{chats, AppState};
+use super::{rights, AppState};
 
 /// Text kept from the reported message (the report must stay readable).
 const REPORT_TEXT_CHARS: usize = 800;
+/// Reports one chat may send within [`REPORT_WINDOW`]; the rest are only logged.
+const REPORTS_PER_WINDOW: u32 = 20;
+const REPORT_WINDOW: Duration = Duration::from_secs(10 * 60);
+
+/// Per-chat report counts in fixed windows.
+#[derive(Default)]
+pub struct ReportBudget {
+    chats: HashMap<i64, (Instant, u32)>,
+}
+
+/// Whether a report may be sent.
+#[derive(Debug, PartialEq, Eq)]
+enum Spend {
+    Granted,
+    /// The first report over the limit in this window (worth one log line).
+    JustExhausted,
+    Refused,
+}
+
+impl ReportBudget {
+    fn spend(&mut self, chat: i64, now: Instant) -> Spend {
+        let (started, count) = self.chats.entry(chat).or_insert((now, 0));
+        if now.duration_since(*started) >= REPORT_WINDOW {
+            (*started, *count) = (now, 0);
+        }
+        *count = count.saturating_add(1);
+        match *count {
+            n if n <= REPORTS_PER_WINDOW => Spend::Granted,
+            n if n == REPORTS_PER_WINDOW + 1 => Spend::JustExhausted,
+            _ => Spend::Refused,
+        }
+    }
+}
+
+/// Names and chat titles in a report are cut to this many characters.
+const REPORT_NAME_CHARS: usize = 64;
+/// Prefix of every line of the reported text, so text from the sender can
+/// never pass for the bot's own words.
+const QUOTE_PREFIX: &str = "│ ";
 
 /// What happened to one spam message, for the report.
 pub struct Incident<'a> {
@@ -34,6 +84,8 @@ pub struct Incident<'a> {
     pub reason: Reason,
     pub score: f32,
     pub deleted: usize,
+    /// The spam was edited into an earlier message.
+    pub edited: bool,
 }
 
 /// Send a report about `incident`, if reports are configured.
@@ -41,6 +93,19 @@ pub async fn send(bot: &Bot, state: &AppState, incident: Incident<'_>) {
     let Some(destination) = state.settings.report_destination() else {
         return;
     };
+    let chat_id = incident.chat.id.0;
+    match state.report_budget().spend(chat_id, Instant::now()) {
+        Spend::Granted => {}
+        Spend::JustExhausted => {
+            tracing::warn!(
+                chat = chat_id,
+                limit = REPORTS_PER_WINDOW,
+                "report_limit_reached"
+            );
+            return;
+        }
+        Spend::Refused => return,
+    }
     let text: String = incident.text.chars().take(REPORT_TEXT_CHARS).collect();
     let id = state.shield().save_report(ReportRecord {
         chat_id: incident.chat.id.0,
@@ -54,23 +119,29 @@ pub async fn send(bot: &Bot, state: &AppState, incident: Incident<'_>) {
         Action::DeleteAndBan => "удалено, бан · deleted, banned",
         Action::DeleteAndMute => "удалено, мут · deleted, muted",
     };
-    let chat_name = incident
-        .chat
-        .title()
-        .map_or_else(|| incident.chat.id.to_string(), str::to_owned);
+    let chat_name = shorten(incident.chat.title().unwrap_or_default());
+    let title = if incident.edited {
+        "🛡 Спам (правка) · Spam (edited)"
+    } else {
+        "🛡 Спам · Spam"
+    };
     // Plain text (no parse mode), so names and spam cannot inject markup.
+    // Everything the bot did not write itself is marked: the chat title and
+    // the sender's name in «», the message line by line behind a bar.
     let body = format!(
-        "🛡 Спам · Spam\n\
-         Чат · Chat: {chat_name}\n\
-         Автор · Sender: {} (id {})\n\
+        "{title}\n\
+         Чат · Chat: «{chat_name}» (id {})\n\
+         Автор · Sender: «{}» (id {})\n\
          Причина · Reason: {} ({:.2})\n\
          Итог · Outcome: {outcome}, {} msg\n\
-         ———\n{text}",
-        incident.sender.display_name(),
+         Текст отправителя, не бота · Sender's text, not the bot's:\n{}",
+        incident.chat.id,
+        shorten(&incident.sender.display_name()),
         incident.sender.id(),
         incident.reason.as_str(),
         incident.score,
         incident.deleted,
+        quote(&text),
     );
 
     let mut row = vec![InlineKeyboardButton::callback(
@@ -85,6 +156,7 @@ pub async fn send(bot: &Bot, state: &AppState, incident: Incident<'_>) {
     }
     let sent = bot
         .send_message(ChatId(destination), body)
+        .link_preview_options(no_preview())
         .reply_markup(InlineKeyboardMarkup::new([row]))
         .await;
     if let Err(e) = sent {
@@ -113,11 +185,16 @@ pub async fn on_callback(
 
     let chat = ChatId(report.chat_id);
     let presser = query.from.id;
-    let allowed = state.settings.owner_id == Some(presser.0 as i64)
-        || chats::is_admin(&bot, &state, chat, presser).await;
-    if !allowed {
+    let action = match verb {
+        Verb::NotSpam => AdminAction::NotSpam,
+        Verb::Ban => AdminAction::ConfirmBan,
+    };
+    // A button press always comes from a person, never from the group itself.
+    let access = rights::authorize(&bot, &state, chat, Some(&query.from), false, action).await;
+    if access != Access::Allowed {
+        tracing::info!(report = id, admin = presser.0, access = ?access, "report_action_refused");
         bot.answer_callback_query(query.id)
-            .text("Только для админов · Admins only")
+            .text(rights::refusal_text(access))
             .await?;
         return Ok(());
     }
@@ -155,12 +232,42 @@ pub async fn on_callback(
         let text = format!("{}\n\n{verdict} — {by}", message.text().unwrap_or_default());
         if let Err(e) = bot
             .edit_message_text(message.chat.id, message.id, text)
+            .link_preview_options(no_preview())
             .await
         {
             tracing::debug!(error = %e, "report_edit_failed");
         }
     }
     Ok(())
+}
+
+/// `raw` on one line, cut to [`REPORT_NAME_CHARS`].
+fn shorten(raw: &str) -> String {
+    let line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() <= REPORT_NAME_CHARS {
+        return line;
+    }
+    let short: String = line.chars().take(REPORT_NAME_CHARS - 1).collect();
+    format!("{short}…")
+}
+
+/// Every line of `text` behind [`QUOTE_PREFIX`].
+fn quote(text: &str) -> String {
+    text.lines()
+        .map(|line| format!("{QUOTE_PREFIX}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Reports quote spam, often with links: never fetch a preview for them.
+fn no_preview() -> LinkPreviewOptions {
+    LinkPreviewOptions {
+        is_disabled: true,
+        url: None,
+        prefer_small_media: false,
+        prefer_large_media: false,
+        show_above_text: false,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -214,11 +321,11 @@ async fn pardon(bot: &Bot, state: &AppState, chat: ChatId, sender_id: i64) {
 
 async fn ban(bot: &Bot, chat: ChatId, sender_id: i64) {
     let result = if is_channel(sender_id) {
-        bot.ban_chat_sender_chat(chat, ChatId(sender_id))
+        actions::retry_once(|| bot.ban_chat_sender_chat(chat, ChatId(sender_id)).send())
             .await
             .map(drop)
     } else {
-        bot.ban_chat_member(chat, UserId(sender_id as u64))
+        actions::retry_once(|| bot.ban_chat_member(chat, UserId(sender_id as u64)).send())
             .await
             .map(drop)
     };
@@ -237,6 +344,58 @@ mod tests {
         assert_eq!(parse_callback("ban:7"), Some((Verb::Ban, 7)));
         assert_eq!(parse_callback("ham:x"), None);
         assert_eq!(parse_callback("other:1"), None);
+    }
+
+    #[test]
+    fn report_budget_caps_each_chat_per_window() {
+        // Arrange
+        let mut budget = ReportBudget::default();
+        let now = Instant::now();
+        for _ in 0..REPORTS_PER_WINDOW {
+            assert_eq!(budget.spend(-1, now), Spend::Granted);
+        }
+
+        // Act
+        let first_over = budget.spend(-1, now);
+        let second_over = budget.spend(-1, now);
+        let other_chat = budget.spend(-2, now);
+
+        // Assert
+        assert_eq!(first_over, Spend::JustExhausted);
+        assert_eq!(second_over, Spend::Refused);
+        assert_eq!(other_chat, Spend::Granted);
+    }
+
+    #[test]
+    fn report_budget_refills_after_the_window() {
+        // Arrange
+        let mut budget = ReportBudget::default();
+        let start = Instant::now();
+        for _ in 0..=REPORTS_PER_WINDOW {
+            budget.spend(-1, start);
+        }
+
+        // Act
+        let later = budget.spend(-1, start + REPORT_WINDOW);
+
+        // Assert
+        assert_eq!(later, Spend::Granted);
+    }
+
+    #[test]
+    fn foreign_text_is_quoted_line_by_line() {
+        assert_eq!(
+            quote("buy now\n✅ Не спам\n\nt.me/x"),
+            "│ buy now\n│ ✅ Не спам\n│ \n│ t.me/x"
+        );
+    }
+
+    #[test]
+    fn names_are_one_short_line() {
+        assert_eq!(shorten("Group\nname "), "Group name");
+        let long = shorten(&"я".repeat(200));
+        assert_eq!(long.chars().count(), REPORT_NAME_CHARS);
+        assert!(long.ends_with('…'));
     }
 
     #[test]

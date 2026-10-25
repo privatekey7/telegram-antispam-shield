@@ -76,6 +76,10 @@ jobs:
           platforms: ${{ matrix.platform }}
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          # SPDX SBOM and SLSA provenance, attached to the image as
+          # attestations; the manifest below keeps them.
+          sbom: true
+          provenance: mode=max
           cache-from: type=gha,scope=release-${{ env.PLATFORM_PAIR }}
           cache-to: type=gha,mode=max,scope=release-${{ env.PLATFORM_PAIR }}
       - name: Export digest
@@ -97,6 +101,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Keyless cosign signing: a short-lived Sigstore certificate for this
+      # workflow, issued against the job's OIDC token.
+      id-token: write
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -130,6 +137,16 @@ jobs:
             $(printf '${{ env.IMAGE }}@sha256:%s ' *)
       - name: Inspect
         run: docker buildx imagetools inspect "${{ env.IMAGE }}:${{ needs.verify.outputs.version }}"
+      - uses: sigstore/cosign-installer@v3
+      # Signed by digest, so the signature covers every tag of this manifest
+      # and cannot be moved to another image. Verification: docs/hosting.md.
+      - name: Sign image
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          digest="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest}}' | jq -r .digest)"
+          case "$digest" in sha256:*) ;; *) echo "::error::no digest for $IMAGE:$VERSION"; exit 1 ;; esac
+          cosign sign --yes "$IMAGE@$digest"
 
   release:
     name: GitHub Release

@@ -46,6 +46,17 @@ const MIGRATIONS: &[&str] = &[
         text       TEXT    NOT NULL,
         created_at INTEGER NOT NULL DEFAULT (unixepoch())
     );",
+    // Samples per chat (ADR 0011). Older samples have no chat and may have
+    // been planted from any chat, so they are set aside, never loaded.
+    "ALTER TABLE samples RENAME TO samples_unscoped;
+    CREATE TABLE samples (
+        id         INTEGER PRIMARY KEY,
+        chat_id    INTEGER NOT NULL,
+        kind       TEXT    NOT NULL CHECK (kind IN ('spam', 'ham')),
+        text       TEXT    NOT NULL,
+        added_at   INTEGER NOT NULL DEFAULT (unixepoch()),
+        UNIQUE (chat_id, kind, text)
+    );",
 ];
 
 /// One member's standing in one chat.
@@ -56,7 +67,7 @@ pub struct MemberRecord {
 }
 
 /// Kind of a learned sample.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SampleKind {
     Spam,
     Ham,
@@ -69,6 +80,14 @@ impl SampleKind {
             SampleKind::Ham => "ham",
         }
     }
+}
+
+/// A learned sample as stored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SampleRecord {
+    pub id: i64,
+    pub chat_id: i64,
+    pub text: String,
 }
 
 /// Admin warnings for one member: how many, and when the last one was given
@@ -153,26 +172,39 @@ impl Store {
         Ok(())
     }
 
-    /// Learned samples of `kind`, oldest first.
-    pub fn samples(&self, kind: SampleKind) -> Result<Vec<String>> {
+    /// Learned samples of `kind` in all chats, oldest first.
+    pub fn samples(&self, kind: SampleKind) -> Result<Vec<SampleRecord>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare("SELECT text FROM samples WHERE kind = ?1 ORDER BY id")?;
-        let rows = stmt.query_map([kind.as_str()], |row| row.get(0))?;
+        let mut stmt =
+            conn.prepare("SELECT id, chat_id, text FROM samples WHERE kind = ?1 ORDER BY id")?;
+        let rows = stmt.query_map([kind.as_str()], |row| {
+            Ok(SampleRecord {
+                id: row.get(0)?,
+                chat_id: row.get(1)?,
+                text: row.get(2)?,
+            })
+        })?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
-    /// Add a sample and keep at most `keep` of its kind (oldest go first).
-    pub fn add_sample(&self, kind: SampleKind, text: &str, keep: usize) -> Result<()> {
-        let conn = self.conn();
-        conn.execute(
-            "INSERT INTO samples (kind, text) VALUES (?1, ?2)",
-            params![kind.as_str(), text],
-        )?;
-        conn.execute(
-            "DELETE FROM samples WHERE kind = ?1 AND id NOT IN
-                 (SELECT id FROM samples WHERE kind = ?1 ORDER BY id DESC LIMIT ?2)",
-            params![kind.as_str(), keep as i64],
-        )?;
+    /// Add a sample to `chat_id` and return its ID, or `None` if the chat
+    /// already has this exact text. Limits are kept by the caller.
+    pub fn add_sample(&self, chat_id: i64, kind: SampleKind, text: &str) -> Result<Option<i64>> {
+        self.conn()
+            .query_row(
+                "INSERT INTO samples (chat_id, kind, text) VALUES (?1, ?2, ?3)
+                 ON CONFLICT DO NOTHING RETURNING id",
+                params![chat_id, kind.as_str(), text],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Delete the sample with `id`.
+    pub fn remove_sample(&self, id: i64) -> Result<()> {
+        self.conn()
+            .execute("DELETE FROM samples WHERE id = ?1", [id])?;
         Ok(())
     }
 
@@ -238,11 +270,20 @@ impl Store {
 }
 
 fn migrate(conn: &Connection) -> Result<()> {
+    apply_migrations(conn, MIGRATIONS)
+}
+
+/// Each migration and its version bump commit together, so a crash midway
+/// leaves the previous version intact instead of a half-built schema that
+/// fails on every start.
+fn apply_migrations(conn: &Connection, migrations: &[&str]) -> Result<()> {
     let applied: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    for (version, sql) in (1..).zip(MIGRATIONS).skip(applied.max(0) as usize) {
-        conn.execute_batch(sql)
+    for (version, sql) in (1..).zip(migrations).skip(applied.max(0) as usize) {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(sql)
             .with_context(|| format!("migration {version} failed"))?;
-        conn.pragma_update(None, "user_version", version)?;
+        tx.pragma_update(None, "user_version", version)?;
+        tx.commit()?;
     }
     Ok(())
 }
@@ -270,15 +311,89 @@ mod tests {
     }
 
     #[test]
-    fn samples_are_capped_per_kind() {
+    fn samples_are_kept_per_chat_and_kind() {
         let store = Store::in_memory().unwrap();
-        for text in ["a", "b", "c"] {
-            store.add_sample(SampleKind::Spam, text, 2).unwrap();
-        }
-        store.add_sample(SampleKind::Ham, "h", 2).unwrap();
 
-        assert_eq!(store.samples(SampleKind::Spam).unwrap(), vec!["b", "c"]);
-        assert_eq!(store.samples(SampleKind::Ham).unwrap(), vec!["h"]);
+        let first = store.add_sample(-1, SampleKind::Spam, "a b c").unwrap();
+        let again = store.add_sample(-1, SampleKind::Spam, "a b c").unwrap();
+        let other_chat = store.add_sample(-2, SampleKind::Spam, "a b c").unwrap();
+        store.add_sample(-1, SampleKind::Ham, "a b c").unwrap();
+        store.remove_sample(other_chat.unwrap()).unwrap();
+
+        assert!(first.is_some());
+        assert_eq!(again, None, "a chat keeps one copy of a text");
+        let spam = store.samples(SampleKind::Spam).unwrap();
+        assert_eq!(
+            spam,
+            vec![SampleRecord {
+                id: first.unwrap(),
+                chat_id: -1,
+                text: "a b c".to_string()
+            }]
+        );
+        assert_eq!(store.samples(SampleKind::Ham).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_failed_migration_leaves_the_previous_version() {
+        // Arrange: the second migration breaks halfway through.
+        let conn = Connection::open_in_memory().unwrap();
+        let migrations = [
+            "CREATE TABLE a (x);",
+            "CREATE TABLE b (x); CREATE TABLE a (y);",
+        ];
+
+        // Act
+        let result = apply_migrations(&conn, &migrations);
+
+        // Assert
+        assert!(result.is_err());
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        let b_exists: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name = 'b'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, 1);
+        assert_eq!(b_exists, 0, "the half-applied migration was rolled back");
+    }
+
+    #[test]
+    fn migration_sets_unscoped_samples_aside() {
+        let conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..2] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 2).unwrap();
+        conn.execute(
+            "INSERT INTO samples (kind, text) VALUES ('spam', 'old global sample')",
+            [],
+        )
+        .unwrap();
+
+        let store = Store::with_connection(conn).unwrap();
+
+        let conn = store.conn();
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        let unscoped: i64 = conn
+            .query_row("SELECT count(*) FROM samples_unscoped", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        drop(conn);
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        assert_eq!(unscoped, 1);
+        assert!(store.samples(SampleKind::Spam).unwrap().is_empty());
+        assert!(store
+            .add_sample(-1, SampleKind::Spam, "old global sample")
+            .unwrap()
+            .is_some());
     }
 
     #[test]

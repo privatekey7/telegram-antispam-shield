@@ -145,13 +145,53 @@ Changing the code and want every merge to go live on your server? See
 
 ## Restricting the bot to your chats
 
-If your bot's username is public, anyone can add it to their group and use
-your server. Set `ANTISPAM_ALLOWED_CHATS` to your group ID(s):
+Every bot's username is public, so anyone can add your bot to their group,
+use your server and send you spam reports (at most 20 per chat per 10
+minutes, but from any number of chats). Learned samples stay in the chat that
+taught them, so `/spam` in a foreign group does not change what is deleted in
+yours. Set `ANTISPAM_ALLOWED_CHATS` to your group
+ID(s); the bot warns at startup while it is unset, and refuses to start if an
+entry is not a number:
 
 1. Stop the bot (or do this before the first start).
 2. Add the bot to the group and send any message there.
-3. Open `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser (keep
-   this URL private — it contains your token).
+3. In the folder with `.env`, fetch the pending updates. The token is read
+   from `.env` and passed to curl on stdin, so it stays out of browser
+   history, the shell history and the process list:
+
+   ```bash
+   printf 'url = "https://api.telegram.org/bot%s/getUpdates"\n' \
+     "$(sed -n 's/^BOT_TOKEN=//p' .env)" | curl -fsS -K -
+   ```
 4. Find `"chat":{"id":-100…` — that negative number is the group ID; `"from":
    {"id":…}` is your user ID for `ANTISPAM_OWNER_ID`.
 5. Put them in `.env` and start the bot.
+
+## Health
+
+The image has a `HEALTHCHECK`: the bot writes a heartbeat to
+`/tmp/antispam-heartbeat` after every successful call to Telegram, and
+`telegram-antispam-shield healthcheck` fails once it is older than 90 s.
+`docker compose ps` shows `healthy` or `unhealthy`, and
+`docker inspect -f '{{.State.Health.Status}}' <container>` prints the status
+alone. With `read_only: true`, `/tmp` must be writable; compose.yaml mounts a
+small tmpfs there. Set `ANTISPAM_HEARTBEAT_FILE` to move the file.
+
+## Verifying the image
+
+Release images are signed with [cosign](https://docs.sigstore.dev/) (keyless,
+by the Release workflow) and carry an SPDX SBOM and SLSA provenance. Images up
+to 0.2.x were published before this and are not signed.
+
+```bash
+image=ghcr.io/privatekey7/telegram-antispam-shield:<version>
+cosign verify "$image" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/privatekey7/telegram-antispam-shield/\.github/workflows/release\.yml@refs/tags/v'
+docker buildx imagetools inspect "$image" --format '{{ json .SBOM }}'
+docker buildx imagetools inspect "$image" --format '{{ json .Provenance }}'
+```
+
+To run exactly the image you verified, put its digest in `.env`
+(`IMAGE_TAG=<version>@sha256:…`, the digest from `cosign verify`). A tag
+can be moved; a digest cannot.

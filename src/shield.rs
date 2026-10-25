@@ -35,6 +35,9 @@ pub struct Incoming<'a> {
     /// The sender is listed in the Combot Anti-Spam database (looked up by
     /// the caller for untrusted senders only).
     pub known_spammer: bool,
+    /// An edit of an earlier message: judged like a new one, but it is not
+    /// recorded in the history and earns no trust.
+    pub edited: bool,
 }
 
 /// What to do about one message.
@@ -103,25 +106,31 @@ impl Shield {
         &self.settings
     }
 
-    /// Number of spam samples learned from admins.
+    /// Number of spam samples learned from admins, in all chats.
     pub fn learned_spam(&self) -> usize {
         self.samples.spam_count()
     }
 
-    /// Decide about `msg` and update history and trust.
+    /// Decide about `msg` and update history and trust (edits update
+    /// neither, except that spam still takes trust away).
     pub fn inspect(&mut self, msg: &Incoming<'_>, now: Instant) -> Decision {
         let text = Some(msg.facts.text).filter(|t| !t.trim().is_empty());
-        let echoes = self
-            .history
-            .record(msg.chat, msg.sender, msg.message_id, text, now);
+        let echoes = if msg.edited {
+            self.history
+                .echoes_of_edit(msg.chat, msg.sender, msg.message_id, text, now)
+        } else {
+            self.history
+                .record(msg.chat, msg.sender, msg.message_id, text, now)
+        };
         let standing = self.standing(msg.chat, msg.sender, now);
-        let vouched = text.is_some_and(|t| self.samples.resembles_ham(t));
+        let vouched = text.is_some_and(|t| self.samples.resembles_ham(msg.chat, t));
 
         let known_spammer = (msg.known_spammer && !standing.trusted)
             .then(|| spam(Reason::KnownSpammer, Vec::new()));
-        let learned =
-            (!standing.trusted && !vouched && text.is_some_and(|t| self.samples.resembles_spam(t)))
-                .then(|| spam(Reason::LearnedSpam, Vec::new()));
+        let learned = (!standing.trusted
+            && !vouched
+            && text.is_some_and(|t| self.samples.resembles_spam(msg.chat, t)))
+        .then(|| spam(Reason::LearnedSpam, Vec::new()));
         let mut decision = known_spammer
             .or_else(|| self.history_rule(msg.chat, &echoes, standing))
             .or(learned)
@@ -139,6 +148,9 @@ impl Shield {
             self.trust.revoke(msg.chat, msg.sender);
             return decision;
         }
+        if msg.edited {
+            return Decision::allow(false);
+        }
         let chars = text::strip_invisible(msg.facts.text).trim().chars().count();
         Decision::allow(self.trust.record_clean(msg.chat, msg.sender, chars))
     }
@@ -149,17 +161,17 @@ impl Shield {
         self.trust.is_trusted(chat, sender)
     }
 
-    /// An admin marked `text` from `sender` as spam (`/spam`): learn it and
-    /// withdraw the sender's trust.
+    /// An admin marked `text` from `sender` as spam (`/spam`): learn it for
+    /// `chat` and withdraw the sender's trust.
     pub fn learn_spam(&mut self, chat: i64, sender: i64, text: &str) {
-        self.samples.learn(SampleKind::Spam, text);
+        self.samples.learn(chat, SampleKind::Spam, text);
         self.trust.revoke(chat, sender);
     }
 
-    /// An admin said `text` from `sender` is not spam: learn it as such,
-    /// trust the sender and drop their warnings.
+    /// An admin said `text` from `sender` is not spam: learn it as such for
+    /// `chat`, trust the sender and drop their warnings.
     pub fn vouch(&mut self, chat: i64, sender: i64, text: &str) {
-        self.samples.learn(SampleKind::Ham, text);
+        self.samples.learn(chat, SampleKind::Ham, text);
         self.trust.approve(chat, sender);
         self.warnings.clear(chat, sender);
     }
@@ -283,6 +295,14 @@ mod tests {
             message_id,
             facts: MessageFacts::text(text),
             known_spammer: false,
+            edited: false,
+        }
+    }
+
+    fn edit(sender: i64, message_id: i32, text: &str) -> Incoming<'_> {
+        Incoming {
+            edited: true,
+            ..msg(sender, message_id, text)
         }
     }
 
@@ -416,6 +436,21 @@ mod tests {
     }
 
     #[test]
+    fn a_spam_command_in_one_chat_does_not_reach_another() {
+        let mut shield = shield();
+        let now = Instant::now();
+        let other = Incoming {
+            chat: CHAT - 1,
+            ..msg(2, 1, PROMO)
+        };
+
+        shield.learn_spam(CHAT, 1, PROMO);
+        let decision = shield.inspect(&other, now);
+
+        assert_ne!(reason(&decision), Some(Reason::LearnedSpam));
+    }
+
+    #[test]
     fn vouched_text_is_no_longer_judged_by_the_model() {
         let mut shield = shield();
         let now = Instant::now();
@@ -479,5 +514,75 @@ mod tests {
         shield.inspect(&msg(1, 9, "вступай t.me/+SecretInvite"), now);
 
         assert!(!shield.standing(CHAT, 1, now).trusted);
+    }
+
+    #[test]
+    fn edit_into_spam_is_caught() {
+        let mut shield = shield();
+        let now = Instant::now();
+        let hello = shield.inspect(&msg(1, 1, "Привет всем, подскажите по мосту"), now);
+
+        let edited = shield.inspect(&edit(1, 1, "вступай t.me/+SecretInvite"), now + mins(5));
+
+        assert_eq!(hello.verdict, Verdict::Allow);
+        assert!(reason(&edited).is_some(), "{edited:?}");
+    }
+
+    #[test]
+    fn edits_are_not_repeats() {
+        let mut shield = shield();
+        let start = Instant::now();
+        let text = "Кто-нибудь знает, когда откроют клейм на мосту?";
+        shield.inspect(&msg(1, 1, text), start);
+
+        for i in 1..=3 {
+            shield.inspect(&edit(1, 1, text), start + mins(i));
+        }
+        let second = shield.inspect(&msg(1, 2, text), start + mins(5));
+
+        assert_eq!(second.verdict, Verdict::Allow, "{second:?}");
+    }
+
+    #[test]
+    fn edit_into_an_earlier_promo_is_a_campaign() {
+        let mut shield = shield();
+        let start = Instant::now();
+        shield.inspect(&msg(1, 1, PROMO), start);
+        shield.inspect(&msg(2, 2, "Добрый вечер всем"), start);
+
+        let edited = shield.inspect(&edit(2, 2, PROMO), start + mins(10));
+
+        assert_eq!(reason(&edited), Some(Reason::Campaign));
+        assert_eq!(edited.also_delete, vec![1]);
+    }
+
+    #[test]
+    fn edits_earn_no_trust() {
+        let mut shield = shield();
+        let now = Instant::now();
+        shield.inspect(&msg(1, 1, "Первое нормальное сообщение"), now);
+
+        let edits: Vec<bool> = (0..3)
+            .map(|_| {
+                shield
+                    .inspect(&edit(1, 1, "Первое нормальное сообщение, исправил"), now)
+                    .newly_trusted
+            })
+            .collect();
+
+        assert_eq!(edits, vec![false, false, false]);
+        assert!(!shield.is_trusted(CHAT, 1));
+    }
+
+    #[test]
+    fn trusted_members_may_edit_in_a_bare_link() {
+        let mut shield = shield();
+        let now = Instant::now();
+        shield.trust.approve(CHAT, 1);
+        let link = "https://docs.arbitrum.foundation/airdrop-eligibility-distribution";
+
+        let edited = shield.inspect(&edit(1, 1, link), now);
+
+        assert_eq!(edited.verdict, Verdict::Allow);
     }
 }

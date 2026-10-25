@@ -9,18 +9,41 @@ use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-/// Characters that render as nothing. Zero-width (non-)joiners are included
-/// for stripping only: they legitimately join emoji and some scripts.
+/// Characters that render as nothing. Zero-width (non-)joiners and the
+/// direction marks are included for stripping only: they legitimately join
+/// emoji and some scripts, or order right-to-left text.
 fn is_invisible(c: char) -> bool {
     matches!(
         c,
         '\u{00AD}' | '\u{180E}' | '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' | '\u{FEFF}'
-    )
+    ) || is_bidi_control(c)
 }
 
 /// Invisible characters that have no legitimate use inside a word.
 fn is_word_splitter(c: char) -> bool {
-    is_invisible(c) && !matches!(c, '\u{200C}' | '\u{200D}')
+    is_invisible(c) && !matches!(c, '\u{200C}' | '\u{200D}') && !is_direction_mark(c)
+}
+
+/// Unicode direction controls: marks, embeddings, overrides and isolates.
+/// An override can make text read differently from how it is stored
+/// (`\u{202E}` turns "gpj.exe" around).
+fn is_bidi_control(c: char) -> bool {
+    is_direction_mark(c) || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// Single direction marks, common in right-to-left text.
+fn is_direction_mark(c: char) -> bool {
+    matches!(c, '\u{200E}' | '\u{200F}' | '\u{061C}')
+}
+
+/// `text` without direction controls, for quoting it next to the bot's own
+/// words.
+pub fn strip_bidi(text: &str) -> Cow<'_, str> {
+    if text.chars().any(is_bidi_control) {
+        Cow::Owned(text.chars().filter(|c| !is_bidi_control(*c)).collect())
+    } else {
+        Cow::Borrowed(text)
+    }
 }
 
 /// `text` without invisible characters (borrowed when there are none).
@@ -122,6 +145,15 @@ mod tests {
         ));
         assert!(hides_characters_in_words("за\u{2060}работок"));
         assert!(hides_characters_in_words("cli\u{200B}\u{200B}ck"));
+        assert!(hides_characters_in_words("pay\u{202E}lap.com"));
+        assert!(hides_characters_in_words("pro\u{2066}mo"));
+    }
+
+    #[test]
+    fn direction_marks_are_not_spam_but_are_stripped() {
+        assert!(!hides_characters_in_words("שלום\u{200F}abc"));
+        assert_eq!(strip_bidi("a\u{202E}b\u{200F}c"), "abc");
+        assert!(matches!(strip_bidi("plain"), Cow::Borrowed("plain")));
     }
 
     #[test]

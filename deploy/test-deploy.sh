@@ -8,7 +8,8 @@ set -eu
 
 here="$(cd "$(dirname "$0")" && pwd)"
 sha="0123456789abcdef0123456789abcdef01234567"
-good="sha-$sha"
+digest="89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+good="deploy-$sha@sha256:$digest"
 failures=0
 
 work="$(mktemp -d)"
@@ -72,14 +73,20 @@ for shell in sh dash bash; do
     expect_rejected "newline first" "IMAGE=evil.example/x${nl}$good"
     expect_rejected "trailing newline" "$good$nl"
     expect_rejected "carriage return" "$good$cr"
-    expect_rejected "uppercase hex" "sha-$(printf '%s' "$sha" | tr a-f A-F)"
-    expect_rejected "uppercase prefix" "SHA-$sha"
-    expect_rejected "short" "sha-${sha%?}"
+    expect_rejected "uppercase hex" "deploy-$(printf '%s' "$sha" | tr a-f A-F)@sha256:$digest"
+    expect_rejected "uppercase digest" "deploy-$sha@sha256:$(printf '%s' "$digest" | tr a-f A-F)"
+    expect_rejected "uppercase prefix" "DEPLOY-$sha@sha256:$digest"
+    expect_rejected "short commit" "deploy-${sha%?}@sha256:$digest"
+    expect_rejected "short digest" "deploy-$sha@sha256:${digest%?}"
     expect_rejected "long" "${good}0"
+    expect_rejected "no digest" "deploy-$sha"
+    expect_rejected "old sha- tag" "sha-$sha"
+    expect_rejected "two digests" "$good@sha256:$digest"
+    expect_rejected "other algorithm" "deploy-$sha@sha512:$digest"
     expect_rejected "trailing space" "$good "
     expect_rejected "leading space" " $good"
-    expect_rejected "command substitution" "sha-\$(id)${sha#??????}"
-    expect_rejected "no prefix" "$sha"
+    expect_rejected "command substitution" "deploy-\$(id)${sha#??????}@sha256:$digest"
+    expect_rejected "no prefix" "$sha@sha256:$digest"
     expect_rejected "empty" ""
 
     # The forced command passes the tag in SSH_ORIGINAL_COMMAND.

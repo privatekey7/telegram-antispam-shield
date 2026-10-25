@@ -11,6 +11,8 @@ mod bot;
 use std::path::Path;
 use std::sync::Arc;
 
+use dptree::HandlerDescription;
+use teloxide::dispatching::DpHandlerDescription;
 use teloxide::error_handlers::LoggingErrorHandler;
 use teloxide::prelude::*;
 use tracing_subscriber::EnvFilter;
@@ -75,15 +77,22 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(bot::AppState::new(shield, username));
     bot::spawn_sweeper(Arc::clone(&state));
 
-    // The handler tree also tells Telegram which update types to send.
+    // The handler tree also tells Telegram which update types to send. The
+    // first step only counts the update as taken; its `entry` description
+    // keeps it out of that list.
     let handler = dptree::entry()
+        .chain(dptree::inspect_with_description(
+            DpHandlerDescription::entry(),
+            bot::taken,
+        ))
         .branch(Update::filter_message().endpoint(bot::on_message))
         .branch(Update::filter_edited_message().endpoint(bot::on_edited_message))
         .branch(Update::filter_chat_member().endpoint(bot::on_chat_member))
         .branch(Update::filter_callback_query().endpoint(bot::on_callback));
-    let poller = bot::Poller::new(bot.clone()).await;
+    let poller = bot::Poller::new(bot.clone(), Arc::clone(&state.backlog)).await;
     let mut dispatcher = Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![state])
+        .worker_queue_size(bot::CHAT_QUEUE)
         .enable_ctrlc_handler()
         .build();
 

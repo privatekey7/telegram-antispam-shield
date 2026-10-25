@@ -1,7 +1,7 @@
 #!/bin/sh
 # Roll the bot to a given image tag and roll back if it does not come up.
 #
-# Usage: deploy.sh sha-<40-char commit>
+# Usage: deploy.sh deploy-<40-char commit>@sha256:<64-char digest>
 # Lives next to compose.yaml and .env (docs/auto-deploy.md). CI calls it
 # through an SSH forced command, so the tag arrives in SSH_ORIGINAL_COMMAND;
 # run by hand, pass it as the first argument.
@@ -17,22 +17,31 @@ STARTUP_WAIT_SECS="${STARTUP_WAIT_SECS:-15}"
 
 # The tag is untrusted input from the SSH session: accept only the exact shape.
 # Check the whole value with shell patterns, not grep: grep matches line by
-# line, so "sha-<sha>\nIMAGE=..." would pass and inject lines into .env.
+# line, so "deploy-<sha>\nIMAGE=..." would pass and inject lines into .env.
+# The digest pins the exact image CI built and signed; the tag only names it.
 valid_tag() {
     case "$1" in
-        sha-*) ;;
+        deploy-*@sha256:*) ;;
         *) return 1 ;;
     esac
-    hex="${1#sha-}"
-    [ "${#hex}" -eq 40 ] || return 1
-    # Spelled out rather than a-f, so the locale cannot widen the range.
-    case "$hex" in
+    rest="${1#deploy-}"
+    commit="${rest%%@*}"
+    digest="${rest#*@sha256:}"
+    [ "$rest" = "$commit@sha256:$digest" ] || return 1
+    is_hex "$commit" 40 && is_hex "$digest" 64
+}
+
+# Exactly $2 lower-case hex digits. Spelled out rather than a-f, so the locale
+# cannot widen the range.
+is_hex() {
+    [ "${#1}" -eq "$2" ] || return 1
+    case "$1" in
         *[!0123456789abcdef]*) return 1 ;;
     esac
 }
 
 if ! valid_tag "$TAG"; then
-    echo "usage: deploy.sh sha-<40-char commit sha>" >&2
+    echo "usage: deploy.sh deploy-<40-char commit sha>@sha256:<64-char digest>" >&2
     exit 2
 fi
 

@@ -5,10 +5,12 @@
 //! member what that member could not do alone (confused deputy):
 //!
 //! * banning actions (`/spam`, `/ban`, the report's "Ban" button) need the
-//!   "Ban users" right (`can_restrict_members`);
-//! * "Not spam" unbans, so it needs the same right;
-//! * `/warn` needs "Ban users" while warnings can end in a ban
-//!   (`ANTISPAM_WARN_LIMIT` > 0), otherwise only "Delete messages";
+//!   "Ban users" right (`can_restrict_members`) and, since they also delete
+//!   messages and `/spam` teaches the bot to delete similar ones, "Delete
+//!   messages" (`can_delete_messages`);
+//! * "Not spam" unbans, so it needs "Ban users";
+//! * `/warn` deletes, so it needs "Delete messages", and also "Ban users"
+//!   while warnings can end in a ban (`ANTISPAM_WARN_LIMIT` > 0);
 //! * the chat creator has every right, and the bot's owner may do anything;
 //! * anonymous admins (posting as the group) are refused: Telegram does not
 //!   say which admin is behind the message, so their rights are unknown.
@@ -65,16 +67,17 @@ pub enum AdminAction {
 }
 
 impl AdminAction {
-    /// The right `self` needs when `warn_limit` warnings mean a ban
+    /// The rights `self` needs when `warn_limit` warnings mean a ban
     /// (`0` = warnings never ban).
-    pub fn privilege(self, warn_limit: u32) -> Privilege {
+    pub fn privileges(self, warn_limit: u32) -> &'static [Privilege] {
+        const BAN_AND_DELETE: &[Privilege] =
+            &[Privilege::RestrictMembers, Privilege::DeleteMessages];
         match self {
-            AdminAction::Warn if warn_limit == 0 => Privilege::DeleteMessages,
-            AdminAction::Spam
-            | AdminAction::Ban
-            | AdminAction::Warn
-            | AdminAction::NotSpam
-            | AdminAction::ConfirmBan => Privilege::RestrictMembers,
+            AdminAction::Warn if warn_limit == 0 => &[Privilege::DeleteMessages],
+            AdminAction::NotSpam => &[Privilege::RestrictMembers],
+            AdminAction::Spam | AdminAction::Ban | AdminAction::Warn | AdminAction::ConfirmBan => {
+                BAN_AND_DELETE
+            }
         }
     }
 }
@@ -96,7 +99,7 @@ pub enum Access {
     Allowed,
     /// Not an admin: the request is an ordinary message.
     NotAdmin,
-    /// An admin without the right the action needs.
+    /// An admin without a right the action needs (the first one missing).
     MissingRight(Privilege),
     /// An anonymous admin, whose rights cannot be checked.
     Anonymous,
@@ -125,14 +128,16 @@ pub fn may_target(target: Target) -> bool {
     }
 }
 
-/// Whether `caller` may do something that needs `needed`.
-pub fn check(caller: Caller, needed: Privilege) -> Access {
+/// Whether `caller` may do something that needs every right in `needed`.
+pub fn check(caller: Caller, needed: &[Privilege]) -> Access {
     match caller {
         Caller::Owner => Access::Allowed,
         Caller::AnonymousAdmin => Access::Anonymous,
         Caller::Member(None) => Access::NotAdmin,
-        Caller::Member(Some(rights)) if rights.allow(needed) => Access::Allowed,
-        Caller::Member(Some(_)) => Access::MissingRight(needed),
+        Caller::Member(Some(rights)) => match needed.iter().find(|p| !rights.allow(**p)) {
+            None => Access::Allowed,
+            Some(missing) => Access::MissingRight(*missing),
+        },
     }
 }
 
@@ -165,12 +170,40 @@ mod tests {
 
         for action in banning {
             // Act
-            let needed = action.privilege(3);
+            let needed = action.privileges(3);
 
             // Assert
-            assert_eq!(needed, Privilege::RestrictMembers, "{action:?}");
-            assert_eq!(action.privilege(0), Privilege::RestrictMembers);
+            assert!(needed.contains(&Privilege::RestrictMembers), "{action:?}");
+            assert!(action.privileges(0).contains(&Privilege::RestrictMembers));
         }
+    }
+
+    #[test]
+    fn actions_that_delete_need_the_delete_right_too() {
+        // Arrange
+        let deleting = [
+            AdminAction::Spam,
+            AdminAction::Ban,
+            AdminAction::Warn,
+            AdminAction::ConfirmBan,
+        ];
+        let ban_only = Caller::Member(Some(RESTRICT_ONLY));
+
+        for action in deleting {
+            // Act
+            let access = check(ban_only, action.privileges(3));
+
+            // Assert
+            assert_eq!(
+                access,
+                Access::MissingRight(Privilege::DeleteMessages),
+                "{action:?}"
+            );
+        }
+        assert_eq!(
+            check(ban_only, AdminAction::NotSpam.privileges(3)),
+            Access::Allowed
+        );
     }
 
     #[test]
@@ -180,12 +213,15 @@ mod tests {
         let never_bans = 0;
 
         // Act
-        let with_limit = AdminAction::Warn.privilege(can_ban);
-        let without_limit = AdminAction::Warn.privilege(never_bans);
+        let with_limit = AdminAction::Warn.privileges(can_ban);
+        let without_limit = AdminAction::Warn.privileges(never_bans);
 
         // Assert
-        assert_eq!(with_limit, Privilege::RestrictMembers);
-        assert_eq!(without_limit, Privilege::DeleteMessages);
+        assert_eq!(
+            with_limit,
+            [Privilege::RestrictMembers, Privilege::DeleteMessages]
+        );
+        assert_eq!(without_limit, [Privilege::DeleteMessages]);
     }
 
     #[test]
@@ -194,7 +230,7 @@ mod tests {
         let caller = Caller::Member(Some(RESTRICT_ONLY));
 
         // Act
-        let access = check(caller, Privilege::RestrictMembers);
+        let access = check(caller, &[Privilege::RestrictMembers]);
 
         // Assert
         assert_eq!(access, Access::Allowed);
@@ -207,8 +243,8 @@ mod tests {
         let title_only = Caller::Member(Some(TITLE_ONLY));
 
         // Act
-        let ban_by_deleter = check(delete_only, Privilege::RestrictMembers);
-        let warn_by_title = check(title_only, Privilege::DeleteMessages);
+        let ban_by_deleter = check(delete_only, &[Privilege::RestrictMembers]);
+        let warn_by_title = check(title_only, &[Privilege::DeleteMessages]);
 
         // Assert
         assert_eq!(
@@ -226,7 +262,10 @@ mod tests {
         // Arrange
         let creator = Caller::Member(Some(AdminRights::CREATOR));
 
-        for needed in [Privilege::DeleteMessages, Privilege::RestrictMembers] {
+        for needed in [
+            &[Privilege::DeleteMessages][..],
+            &[Privilege::RestrictMembers, Privilege::DeleteMessages],
+        ] {
             // Act
             let by_creator = check(creator, needed);
             let by_owner = check(Caller::Owner, needed);
@@ -240,7 +279,7 @@ mod tests {
     #[test]
     fn anonymous_admins_and_members_are_refused() {
         // Arrange
-        let needed = Privilege::DeleteMessages;
+        let needed = &[Privilege::DeleteMessages];
 
         // Act
         let anonymous = check(Caller::AnonymousAdmin, needed);

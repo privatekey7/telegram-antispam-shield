@@ -21,9 +21,23 @@ impl Warnings {
                 Vec::new()
             })
         });
-        Warnings {
+        let mut warnings = Warnings {
             members: members.into_iter().collect(),
             store,
+        };
+        warnings.prune(crate::trust::unix_now());
+        warnings
+    }
+
+    /// Forget warnings that no longer count at `now` (Unix seconds).
+    pub fn prune(&mut self, now: i64) {
+        let before = now - WARNING_TTL_SECS;
+        self.members
+            .retain(|_, record| record.count > 0 && record.updated_at >= before);
+        if let Some(store) = &self.store {
+            if let Err(e) = store.prune_warnings(before) {
+                tracing::warn!(error = %e, "warnings_prune_failed");
+            }
         }
     }
 
@@ -78,6 +92,16 @@ mod tests {
         warnings.warn(-1, 5, NOW);
         warnings.clear(-1, 5);
         assert_eq!(warnings.warn(-1, 5, NOW), 1);
+    }
+
+    #[test]
+    fn faded_warnings_are_forgotten() {
+        let mut warnings = Warnings::new(None);
+        warnings.warn(-1, 5, NOW);
+
+        warnings.prune(NOW + WARNING_TTL_SECS + 1);
+
+        assert!(warnings.members.is_empty());
     }
 
     #[test]

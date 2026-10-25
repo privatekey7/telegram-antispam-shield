@@ -25,7 +25,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 dotenvy = "0.15"
 # Already pulled in by teloxide: HTTP for CAS lookups and JSON decoding.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 # Already pulled in by teloxide; needed for mute end times (`until_date`).
 chrono = { version = "0.4", default-features = false }

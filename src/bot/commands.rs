@@ -7,13 +7,15 @@
 //!   within a month mean a ban.
 //!
 //! These are explicit admin actions, so they work in dry-run mode too. They
-//! need the "Ban users" right (`/warn` only "Delete messages" when warnings
-//! never ban); anonymous admins are refused (see `access`). A reply to an
+//! need the "Ban users" and "Delete messages" rights (`/warn` only "Delete
+//! messages" when warnings never ban); anonymous admins are refused (see
+//! `access`). A reply to an
 //! admin, the bot's owner or a post of the group itself gets a hint instead.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use teloxide::prelude::*;
+use teloxide::types::MessageKind;
 
 use telegram_antispam_shield::access::{self, Access, AdminAction, Target};
 use telegram_antispam_shield::config::Action;
@@ -80,7 +82,7 @@ pub async fn run(bot: &Bot, state: &AppState, msg: &Message, command: Command) {
     // Without a hint a misused command just vanishes and the admin is left
     // guessing. A reply to a message from another chat (including the group
     // before it became a supergroup) also arrives without a target.
-    let Some(target) = msg.reply_to_message() else {
+    let Some(target) = target_of_command(msg) else {
         actions::send_temporary(bot, chat, NO_TARGET_HINT.to_owned(), HINT_TTL).await;
         return;
     };
@@ -133,6 +135,14 @@ pub async fn run(bot: &Bot, state: &AppState, msg: &Message, command: Command) {
             warn_notice(bot, state, chat, &sender, count, ban).await;
         }
     }
+}
+
+/// The message `msg` replies to, if it can be a target. In a forum topic, a
+/// message that replies to nothing still carries the topic's creation notice
+/// as its "reply": a service message, never a target.
+fn target_of_command(msg: &Message) -> Option<&Message> {
+    msg.reply_to_message()
+        .filter(|target| matches!(target.kind, MessageKind::Common(_)))
 }
 
 /// Who wrote `target`, the message a command replies to. A user missing from
@@ -191,6 +201,43 @@ fn unix_now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn message(json: serde_json::Value) -> Message {
+        serde_json::from_str(&json.to_string()).unwrap()
+    }
+
+    #[test]
+    fn a_topic_notice_is_no_target() {
+        // Arrange: `/ban` in a forum topic, replying to nothing.
+        let chat =
+            serde_json::json!({"id": -1001, "type": "supergroup", "title": "f", "is_forum": true});
+        let creator = serde_json::json!({"id": 5, "is_bot": false, "first_name": "C"});
+        let in_topic = message(serde_json::json!({
+            "message_id": 20, "date": 1, "chat": chat, "message_thread_id": 10,
+            "is_topic_message": true,
+            "from": {"id": 1, "is_bot": false, "first_name": "A"},
+            "text": "/ban",
+            "reply_to_message": {
+                "message_id": 10, "date": 1, "chat": chat, "message_thread_id": 10,
+                "from": creator,
+                "forum_topic_created": {"name": "t", "icon_color": 7322096}
+            }
+        }));
+        let real_reply = message(serde_json::json!({
+            "message_id": 21, "date": 1, "chat": chat,
+            "from": {"id": 1, "is_bot": false, "first_name": "A"},
+            "text": "/ban",
+            "reply_to_message": {"message_id": 11, "date": 1, "chat": chat, "from": creator, "text": "spam"}
+        }));
+
+        // Act
+        let notice = target_of_command(&in_topic);
+        let spam = target_of_command(&real_reply);
+
+        // Assert
+        assert!(notice.is_none());
+        assert_eq!(spam.map(|t| t.id.0), Some(11));
+    }
 
     #[test]
     fn parses_our_commands_only() {

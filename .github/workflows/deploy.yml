@@ -1,7 +1,8 @@
 name: Deploy
 
-# Builds the image after CI passes on main, pushes it to GHCR tagged by commit
-# SHA, and rolls it out to your server over SSH (docs/auto-deploy.md). Inert
+# Builds the image after CI passes on main, pushes it to GHCR as
+# deploy-<commit>, signs it, and rolls it out to your server over SSH by
+# digest (docs/auto-deploy.md). Inert
 # until a repository sets the variable DEPLOY_ENABLED=true. Versioned images
 # for everyone come from release.yml.
 #
@@ -48,10 +49,14 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Keyless cosign signing, as in release.yml.
+      id-token: write
     outputs:
-      tag: ${{ steps.tag.outputs.tag }}
+      # `deploy-<commit>@sha256:<digest>`: the server pulls by digest, so it
+      # runs exactly the image built here even if the tag moves.
+      ref: ${{ steps.ref.outputs.ref }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           # Full history, so the next step can see origin/main.
@@ -63,15 +68,18 @@ jobs:
             echo "::error::$(git rev-parse HEAD) is not on main; refusing to deploy"
             exit 1
           fi
+      # Not `sha-<commit>`: release.yml publishes that name for the
+      # multi-arch release image of the same commit.
       - id: tag
-        run: echo "tag=sha-$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
+        run: echo "tag=deploy-$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v7
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           push: true
@@ -79,6 +87,16 @@ jobs:
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+      - id: ref
+        name: Sign image
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          case "$DIGEST" in sha256:*) ;; *) echo "::error::no digest for $TAG"; exit 1 ;; esac
+          cosign sign --yes "$IMAGE@$DIGEST"
+          echo "ref=$TAG@$DIGEST" >> "$GITHUB_OUTPUT"
 
   # Runs only after `image` succeeded, so the guard above covers it too. The
   # `production` environment holds the SSH secrets; protect it with required
@@ -95,7 +113,7 @@ jobs:
           SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
           TARGET: ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}
-          TAG: ${{ needs.image.outputs.tag }}
+          TAG: ${{ needs.image.outputs.ref }}
         run: |
           install -d -m 700 ~/.ssh
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key

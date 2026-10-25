@@ -1,6 +1,7 @@
 //! Update handlers: group messages and their edits, member joins and
 //! private commands.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -20,8 +21,9 @@ use super::{chats, commands, polling, rights, AppState};
 const START_TEXT: &str = "🛡 Anti-Spam Shield is running.\n\n\
 Add me to your group and grant the \"Delete messages\" admin right. \
 I will automatically remove spam in Russian and English.\n\n\
-Private: /status (owner). In a group, admins with the \"Ban users\" right \
-reply to a message with /spam (delete, ban, learn), /ban or /warn.";
+Private: /status (owner). In a group, admins with the \"Ban users\" and \
+\"Delete messages\" rights reply to a message with /spam (delete, ban, learn), \
+/ban or /warn.";
 
 /// What `/status` tells anyone but the owner: nothing about the configuration.
 const STATUS_FOR_OTHERS: &str = "🛡 Anti-Spam Shield is running. \
@@ -108,7 +110,8 @@ async fn moderate(bot: &Bot, state: &AppState, msg: &Message, edited: bool) {
         }
     }
 
-    let text = msg.text().or_else(|| msg.caption());
+    let readable = readable_text(msg);
+    let text = readable.as_deref();
 
     // Flood rules see every new message, including stickers and media without
     // text. An edit is not a new message: fixing a typo is not flooding.
@@ -273,8 +276,12 @@ async fn chat_allowed(bot: &Bot, state: &AppState, chat: ChatId) -> bool {
             Ok(_) => tracing::info!(chat = chat.0, "left_unauthorized_chat"),
             Err(e) => tracing::warn!(error = %e, chat = chat.0, "leave_failed"),
         }
-    } else {
-        tracing::debug!(chat = chat.0, "ignored_unauthorized_chat");
+    } else if state.first_sight_of_unknown(chat.0) {
+        // Once per chat: how an owner without a list finds their group's ID.
+        tracing::info!(
+            chat = chat.0,
+            "chat_not_allowed (add it to ANTISPAM_ALLOWED_CHATS)"
+        );
     }
     false
 }
@@ -306,6 +313,33 @@ fn check_flood(
             strike,
         }),
     }
+}
+
+/// What a person reads in `msg`: its text or caption, else the words of a
+/// poll, checklist, venue or contact. Spammers put ads there because
+/// filters that look at text alone never see them.
+fn readable_text(msg: &Message) -> Option<Cow<'_, str>> {
+    if let Some(text) = msg.text().or_else(|| msg.caption()) {
+        return Some(Cow::Borrowed(text));
+    }
+    let parts: Vec<&str> = if let Some(poll) = msg.poll() {
+        std::iter::once(poll.question.as_str())
+            .chain(poll.options.iter().map(|o| o.text.as_str()))
+            .collect()
+    } else if let Some(list) = msg.checklist() {
+        std::iter::once(list.title.as_str())
+            .chain(list.tasks.iter().map(|t| t.text.as_str()))
+            .collect()
+    } else if let Some(venue) = msg.venue() {
+        vec![venue.title.as_str(), venue.address.as_str()]
+    } else if let Some(contact) = msg.contact() {
+        std::iter::once(contact.first_name.as_str())
+            .chain(contact.last_name.as_deref())
+            .collect()
+    } else {
+        return None;
+    };
+    Some(Cow::Owned(parts.join("\n")))
 }
 
 fn entities(msg: &Message) -> &[teloxide::types::MessageEntity] {
@@ -361,6 +395,7 @@ fn status_text(state: &AppState) -> String {
         .unwrap_or_else(|| state.shield().model().threshold);
     let allowed = match &settings.allowed_chats {
         None => "all chats".to_string(),
+        Some(set) if set.is_empty() => "none yet (see chat_not_allowed in the log)".to_string(),
         Some(set) => format!("{} chat(s)", set.len()),
     };
     let flood = &settings.flood;
@@ -378,8 +413,12 @@ fn status_text(state: &AppState) -> String {
     let trust_line = match settings.trust.after_messages {
         0 => "off (everyone is checked)".to_string(),
         n => format!(
-            "after {n} clean messages of {}+ chars",
-            settings.trust.min_chars
+            "after {n} clean messages of {}+ chars, {}",
+            settings.trust.min_chars,
+            match settings.trust.expires_after {
+                Some(ttl) => format!("lapses after {} silent days", ttl.as_secs() / 86_400),
+                None => "never lapses".to_string(),
+            }
         ),
     };
     let storage = match &settings.data_dir {
@@ -428,4 +467,49 @@ fn status_text(state: &AppState) -> String {
         settings.exempt_admins,
         settings.leave_unknown_chats,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn message(content: serde_json::Value) -> Message {
+        let mut json = serde_json::json!({
+            "message_id": 1, "date": 1,
+            "chat": {"id": -1001, "type": "supergroup", "title": "g"},
+            "from": {"id": 5, "is_bot": false, "first_name": "S"}
+        });
+        json.as_object_mut()
+            .unwrap()
+            .extend(content.as_object().unwrap().clone());
+        serde_json::from_str(&json.to_string()).unwrap()
+    }
+
+    #[test]
+    fn words_outside_text_are_read_too() {
+        // Arrange
+        let checklist = message(serde_json::json!({"checklist": {
+            "title": "EARN 500$ A DAY, write @promo_bot",
+            "tasks": [{"id": 1, "text": "t.me/+invite"}]
+        }}));
+        let poll = message(serde_json::json!({"poll": {
+            "id": "1", "question": "Free crypto?", "total_voter_count": 0,
+            "is_closed": false, "is_anonymous": true, "type": "regular",
+            "allows_multiple_answers": false,
+            "options": [{"text": "yes t.me/x", "voter_count": 0}]
+        }}));
+        let sticker_free = message(serde_json::json!({"text": "plain"}));
+
+        // Act
+        let from_checklist = readable_text(&checklist);
+        let from_poll = readable_text(&poll);
+
+        // Assert
+        assert_eq!(
+            from_checklist.as_deref(),
+            Some("EARN 500$ A DAY, write @promo_bot\nt.me/+invite")
+        );
+        assert_eq!(from_poll.as_deref(), Some("Free crypto?\nyes t.me/x"));
+        assert_eq!(readable_text(&sticker_free).as_deref(), Some("plain"));
+    }
 }

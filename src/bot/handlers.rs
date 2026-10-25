@@ -332,12 +332,11 @@ fn readable_text(msg: &Message) -> Option<Cow<'_, str>> {
             .collect()
     } else if let Some(venue) = msg.venue() {
         vec![venue.title.as_str(), venue.address.as_str()]
-    } else if let Some(contact) = msg.contact() {
+    } else {
+        let contact = msg.contact()?;
         std::iter::once(contact.first_name.as_str())
             .chain(contact.last_name.as_deref())
             .collect()
-    } else {
-        return None;
     };
     Some(Cow::Owned(parts.join("\n")))
 }

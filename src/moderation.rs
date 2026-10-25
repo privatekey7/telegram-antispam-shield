@@ -55,8 +55,6 @@ pub enum Reason {
     Campaign,
     /// A link from someone who joined recently and has not talked yet.
     NewcomerLink,
-    /// The sender is listed in the Combot Anti-Spam database.
-    KnownSpammer,
     /// Resembles a message an admin marked with `/spam`.
     LearnedSpam,
     StopWord,
@@ -98,7 +96,6 @@ impl Reason {
             Reason::Repeated => "repeated_message",
             Reason::Campaign => "spam_campaign",
             Reason::NewcomerLink => "newcomer_link",
-            Reason::KnownSpammer => "cas_banned",
             Reason::LearnedSpam => "learned_spam",
             Reason::StopWord => "stop_word",
             Reason::BlockedScript => "blocked_script",

@@ -76,3 +76,9 @@ here.
   three messages after returning.
 - Two-account spam pairs leave their first copy, unless another rule
   catches it, until a third account confirms the wave.
+
+## Addendum (2026-10-25)
+
+CAS was removed in 0.3.1 (see the addendum to ADR 0008), so the CAS pause
+described above no longer exists. Without CAS, a member's trust no longer
+skips an external lookup.

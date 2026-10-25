@@ -5,7 +5,6 @@
 
 mod actions;
 mod backlog;
-mod cas;
 mod chats;
 mod commands;
 mod handlers;
@@ -44,7 +43,6 @@ pub struct AppState {
     /// Held only for synchronous checks, never across an `.await`.
     flood: Mutex<FloodGuard>,
     chats: tokio::sync::Mutex<chats::ChatCache>,
-    cas: cas::Cas,
     /// Held only for synchronous checks, never across an `.await`.
     report_budget: Mutex<reports::ReportBudget>,
     /// Shared with the poller: updates handed over and not yet taken.
@@ -61,7 +59,6 @@ impl AppState {
             flood: Mutex::new(FloodGuard::new(settings.flood.clone())),
             shield: Mutex::new(shield),
             chats: tokio::sync::Mutex::new(chats::ChatCache::default()),
-            cas: cas::Cas::new(settings.cas.clone()),
             report_budget: Mutex::new(reports::ReportBudget::default()),
             backlog: Arc::default(),
             unknown_chats: Mutex::default(),

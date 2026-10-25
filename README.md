@@ -26,8 +26,8 @@ machine with Docker — a server, a Raspberry Pi, a NAS or a container platform.
 - 🇷🇺 🇬🇧 Trained on real Russian + English spam.
 - 🔎 **Shape checks** (ideas from tg-spam, defaults chosen on data): mixed
   Cyrillic/Latin words, emoji walls, `@somebot`-only triggers, plus opt-in
-  stop words, blocked scripts, forward and link/mention limits. Known
-  spammers are looked up in the [CAS](https://cas.chat) database.
+  stop words, blocked scripts, forward and link/mention limits. No external
+  services: everything runs inside the bot.
 - 👮 **Admin tools:** reply `/spam` once and the whole reworded wave is
   deleted from then on; `/ban`, `/warn` with auto-ban; reports with
   **Not spam** / **Ban** buttons that undo mistakes and teach the bot.
@@ -167,9 +167,6 @@ All settings are **environment variables**: put them in `.env` next to
 | `ANTISPAM_BLOCK_BOT_MENTIONS` | `true` | Treat a message that is only a bot's `@username` (`@gjwgjglkewbot`), the trigger of business-bot spam, as spam. |
 | `ANTISPAM_MIXED_SCRIPT_WORDS` | `2` | Spam when this many words mix Cyrillic and Latin letters (`зaрaботок` with Latin `a`). `0` = off. |
 | `ANTISPAM_EMOJI_LIMIT` | `10` | Spam when a message has this many emoji. `0` = off. |
-| `ANTISPAM_CAS_ENABLED` | `true` | Look up untrusted members in the [Combot Anti-Spam](https://cas.chat) database of known spammers (on their messages and when they join). Sends their numeric user ID to `api.cas.chat`; results are cached for an hour; a slow or failing API counts as "not listed". |
-| `ANTISPAM_CAS_TIMEOUT_SECS` | `5` | Give up on a CAS lookup after this long. After a failed lookup CAS is left alone for a minute, so an outage costs one timeout, not one per message. |
-| `ANTISPAM_CAS_URL` | `https://api.cas.chat` | CAS API base URL, for a mirror. A URL that is not `https` gets a startup warning. |
 | `ANTISPAM_BLOCKED_SCRIPTS` | _(none)_ | Comma-separated writing systems whose messages are spam: `chinese`, `japanese`, `korean`, `arabic`, `hebrew`, `devanagari`, `thai`, `greek`, `armenian`, `georgian`. |
 | `ANTISPAM_STOP_WORDS` | _(none)_ | Comma-separated phrases (case-insensitive) that make a message spam. |
 | `ANTISPAM_BLOCK_FORWARDS` | `false` | Treat forwards, quotes from other chats and stories from untrusted members as spam. |
@@ -257,7 +254,7 @@ Incoming message
    │
    ├─ 0. Anti-flood  → too many messages / same text repeated?    → delete burst + mute
    │
-   ├─ 1. History     → listed in CAS, same text 3× a day, same promo from other accounts,
+   ├─ 1. History     → same text 3× a day, same promo from other accounts,
    │                   looks like a /spam-ed message                → spam
    │
    ├─ 2. Rules       → buttons, hidden characters, invite links   → spam

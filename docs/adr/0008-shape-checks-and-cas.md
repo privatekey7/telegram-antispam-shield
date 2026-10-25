@@ -52,3 +52,16 @@ The text model also misfired on very short messages from new members: "лс",
   spammers on their first message in a new chat; it is not the main defence.
 - An HTTP client (`reqwest`, already pulled in by teloxide) is now a direct
   dependency.
+
+## Addendum (2026-10-25): CAS removed
+
+In October 2026 `api.cas.chat` began to answer every lookup with
+`401 API key required`. Keys are tied to a Combot account. Since then CAS
+caught nothing, and a slow or failing lookup still cost time on each
+untrusted message. In the replayed chat it had found 1 of 33 spam accounts.
+
+We removed CAS in 0.3.1 instead of adding an API key setting: the bot should
+not depend on a third-party service or account. The lookup on messages and
+on joins, the `cas_banned` reason and the `ANTISPAM_CAS_*` settings are gone.
+The settings are now ignored. The container talks only to `api.telegram.org`,
+and `reqwest` is no longer a direct dependency.

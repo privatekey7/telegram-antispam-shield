@@ -28,5 +28,8 @@ __pycache__/
 # Local tools, caches and temp files (owner rule: keep them in .tmp/)
 .tmp/
 
+# Local runs: replay on a real chat export (members' messages) and security audits. Never commit.
+/.runs/
+
 # Agent worktrees created by Claude Code
 /.claude/worktrees/

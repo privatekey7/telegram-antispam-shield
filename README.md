@@ -108,7 +108,19 @@ platforms, a build from source with systemd — see
 2. Make the bot an **administrator** with at least the **Delete messages**
    permission. *(Enable **Ban users** too, so the bot can mute flooders and
    ban/mute spammers.)*
-3. Done. The bot now removes spam automatically.
+3. **Allow the group.** Send any message in it, then find the group's ID in
+   the log and put it in `.env`:
+
+   ```bash
+   docker compose logs bot | grep chat_not_allowed   # chat=-100…
+   nano .env                 # ANTISPAM_ALLOWED_CHATS=-100…
+   docker compose up -d
+   ```
+
+   Until a group is listed the bot moderates nothing there. Every bot's
+   username is public, so this keeps strangers who add your bot from using
+   your server.
+4. Done. The bot now removes spam automatically.
 
 **Test it:** in the group, send something spammy like
 `ЗАРАБОТОК ОТ 5000$ В ДЕНЬ! Пиши в личку` — it should be deleted within a second.
@@ -117,11 +129,10 @@ platforms, a build from source with systemd — see
 > and run `docker compose up -d`. The bot will only log what it *would* delete.
 > Set it back to `false` when you're confident.
 >
-> 🔐 Lock the bot to your groups with `ANTISPAM_ALLOWED_CHATS` —
-> [how to find the group ID](docs/hosting.md#restricting-the-bot-to-your-chats).
-> Every bot's username is public: without the list anyone can add the bot to
-> their group, use your server and send you reports from any number of
-> chats.
+> 🔐 More about the chat list, including how to find IDs without the log:
+> [docs/hosting.md](docs/hosting.md#restricting-the-bot-to-your-chats).
+> `ANTISPAM_ALLOW_ALL_CHATS=true` opens the bot to every group it is added
+> to; only do that for a public bot you mean to share.
 
 ---
 
@@ -129,7 +140,8 @@ platforms, a build from source with systemd — see
 
 All settings are **environment variables**: put them in `.env` next to
 `compose.yaml` (or in your platform's variables), then `docker compose up -d`.
-Only `BOT_TOKEN` is required; everything else has sensible defaults.
+`BOT_TOKEN` is required, and the bot moderates only the chats listed in
+`ANTISPAM_ALLOWED_CHATS`; everything else has sensible defaults.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -143,19 +155,21 @@ Only `BOT_TOKEN` is required; everything else has sensible defaults.
 | `ANTISPAM_BLOCK_JOB_OFFERS` | `true` | Treat job and income offers (remote work, side income, "earn $X a day") as spam when they mention pay or ask to DM. Talking about work is fine. |
 | `ANTISPAM_TRUST_AFTER` | `3` | Clean messages after which a member is trusted: the model, job-offer and newcomer-link checks stop for them (buttons, hidden characters, invite links and repeats still apply). `0` checks everyone. |
 | `ANTISPAM_TRUST_MIN_CHARS` | `10` | Shorter messages ("+", "hi") don't count toward trust. |
+| `ANTISPAM_TRUST_TTL_DAYS` | `90` | Trust lapses after this many days without a clean message; the member then earns it again. Keeps a dormant or sold account from spending old trust. `0` = never lapses. |
 | `ANTISPAM_BLOCK_NEWCOMER_LINKS` | `true` | Treat a link from someone who joined within the history window and hasn't written a normal message yet as spam. |
-| `ANTISPAM_BLOCK_CAMPAIGNS` | `true` | Treat the same long text (40+ characters) from several untrusted accounts as spam and delete every copy. |
+| `ANTISPAM_BLOCK_CAMPAIGNS` | `true` | Treat the same long text (40+ characters) from another untrusted account as spam. Earlier copies are deleted too once three accounts have posted it, so a repost alone cannot get someone's original deleted. |
 | `ANTISPAM_REPEAT_LIMIT` | `3` | Spam when one member posts the same text (15+ characters) this many times within the history window, even slowly. `0` turns it off. |
 | `ANTISPAM_HISTORY_WINDOW_SECS` | `86400` | How long messages and joins are remembered for the rules above. |
 | `ANTISPAM_CLEANUP_ON_BAN` | `true` | When the action is `ban` or `mute`, also delete the spammer's other messages from the history window. |
-| `ANTISPAM_DATA_DIR` | `/data` in Docker | Folder for `antispam.db`, which keeps trusted members across restarts. Unset = memory only. |
+| `ANTISPAM_DATA_DIR` | `/data` in Docker | Folder for `antispam.db`, which keeps trusted members, learned samples, warnings and reports across restarts ([what it holds](docs/hosting.md#what-the-database-holds)). Unset = memory only. |
 | `ANTISPAM_HEARTBEAT_FILE` | `/tmp/antispam-heartbeat` | Heartbeat behind the image's `HEALTHCHECK` ([docs/hosting.md](docs/hosting.md#health)). |
 | `ANTISPAM_MODEL_MIN_CHARS` | `20` | Messages shorter than this and without links skip the model ("лс", "всем привет" carry too little signal). No recall loss on the test data. |
 | `ANTISPAM_BLOCK_BOT_MENTIONS` | `true` | Treat a message that is only a bot's `@username` (`@gjwgjglkewbot`), the trigger of business-bot spam, as spam. |
 | `ANTISPAM_MIXED_SCRIPT_WORDS` | `2` | Spam when this many words mix Cyrillic and Latin letters (`зaрaботок` with Latin `a`). `0` = off. |
 | `ANTISPAM_EMOJI_LIMIT` | `10` | Spam when a message has this many emoji. `0` = off. |
 | `ANTISPAM_CAS_ENABLED` | `true` | Look up untrusted members in the [Combot Anti-Spam](https://cas.chat) database of known spammers (on their messages and when they join). Sends their numeric user ID to `api.cas.chat`; results are cached for an hour; a slow or failing API counts as "not listed". |
-| `ANTISPAM_CAS_TIMEOUT_SECS` | `5` | Give up on a CAS lookup after this long. |
+| `ANTISPAM_CAS_TIMEOUT_SECS` | `5` | Give up on a CAS lookup after this long. After a failed lookup CAS is left alone for a minute, so an outage costs one timeout, not one per message. |
+| `ANTISPAM_CAS_URL` | `https://api.cas.chat` | CAS API base URL, for a mirror. A URL that is not `https` gets a startup warning. |
 | `ANTISPAM_BLOCKED_SCRIPTS` | _(none)_ | Comma-separated writing systems whose messages are spam: `chinese`, `japanese`, `korean`, `arabic`, `hebrew`, `devanagari`, `thai`, `greek`, `armenian`, `georgian`. |
 | `ANTISPAM_STOP_WORDS` | _(none)_ | Comma-separated phrases (case-insensitive) that make a message spam. |
 | `ANTISPAM_BLOCK_FORWARDS` | `false` | Treat forwards, quotes from other chats and stories from untrusted members as spam. |
@@ -167,8 +181,9 @@ Only `BOT_TOKEN` is required; everything else has sensible defaults.
 | `ANTISPAM_SIMILARITY_THRESHOLD` | `0.5` | How close (cosine of word sets, `0–1`) a message must be to a `/spam`-ed one to be deleted automatically. |
 | `ANTISPAM_EXEMPT_ADMINS` | `true` | Never moderate group admins. Posts of the group itself (anonymous admins, the linked channel) are always exempt. |
 | `ANTISPAM_ADMIN_CACHE_TTL` | `3600` | Seconds to cache each group's admin list and rights (used to exempt admins and to turn away non-admins). Commands and report buttons always re-check the admin's rights with Telegram. |
-| `ANTISPAM_ALLOWED_CHATS` | _(all chats)_ | Comma-separated numeric chat IDs the bot is allowed to moderate. When set, every other chat is ignored and sends no reports. **Strongly recommended**: without it, strangers can add the bot, use your hosting, send you reports and teach it samples. An entry that is not a number (such as `@mygroup`) stops the bot at startup. |
-| `ANTISPAM_LEAVE_UNKNOWN_CHATS` | `false` | When `true`, the bot leaves any chat not in `ANTISPAM_ALLOWED_CHATS` instead of just ignoring it. |
+| `ANTISPAM_ALLOWED_CHATS` | _(none)_ | Comma-separated numeric chat IDs the bot moderates. Every other chat is ignored and sends no reports; the first message from one logs `chat_not_allowed` with its ID, so you can add your own group. Unset = no chat is moderated. An entry that is not a number (such as `@mygroup`) stops the bot at startup. |
+| `ANTISPAM_ALLOW_ALL_CHATS` | `false` | Moderate every group the bot is added to when `ANTISPAM_ALLOWED_CHATS` is unset (the behaviour before 0.3). Anyone can then add the bot, use your hosting, send you reports and fill its sample budget. |
+| `ANTISPAM_LEAVE_UNKNOWN_CHATS` | `false` | When `true`, the bot leaves any chat not in `ANTISPAM_ALLOWED_CHATS` instead of just ignoring it. Set the list first, or it leaves your group too. |
 | `ANTISPAM_OWNER_ID` | _(none)_ | Your numeric Telegram user ID. Only you see the `/status` details in a private chat; anyone else (everyone, when unset) only learns that the bot is running. The owner may also use commands and report buttons in every allowed chat. Get it from [@userinfobot](https://t.me/userinfobot). |
 | `ANTISPAM_FLOOD_ENABLED` | `true` | Turn anti-flood on/off. |
 | `ANTISPAM_FLOOD_MAX_MESSAGES` | `6` | Flood when a user sends **more** than this many messages within the window. An album counts as one. |
@@ -197,11 +212,11 @@ Reply to a message in the group with:
 | `/warn` | Deletes the message and warns the author (a notice for a minute). `ANTISPAM_WARN_LIMIT` warnings in a month mean a ban. |
 
 Commands work for `ANTISPAM_OWNER_ID` and for group admins with the
-**Ban users** right (the group's creator has it), also in dry-run mode: the
-bot never bans for someone who could not ban alone. `/warn` needs the same
-right while warnings can end in a ban; with `ANTISPAM_WARN_LIMIT=0` the
-**Delete messages** right is enough. The bot asks Telegram for the admin's
-current rights before acting, so a demoted admin loses access at once.
+**Ban users** and **Delete messages** rights (the group's creator has both),
+also in dry-run mode: the bot never bans or deletes for someone who could
+not do it alone. With `ANTISPAM_WARN_LIMIT=0` warnings never ban, so `/warn`
+needs only **Delete messages**. The bot asks Telegram for the admin's current
+rights before acting, so a demoted admin loses access at once.
 
 **Anonymous admins** (writing as the group) cannot use commands: Telegram
 does not say which admin wrote the message, so their rights cannot be
@@ -210,7 +225,7 @@ buttons, which always show who pressed them.
 
 The command message itself is deleted. A command that is not a reply, or
 replies to a message out of reach (such as one sent before the group became a
-supergroup), gets a 20-second hint instead; so does a command from an admin
+supergroup, or a forum topic's own notice), gets a 20-second hint instead; so does a command from an admin
 without the right. Commands never act on admins, the bot's owner or posts of
 the group itself (anonymous admins, the linked channel): a reply to one of
 them also gets a hint.
@@ -223,9 +238,11 @@ automatic deletion is reported with the reason, the sender and the text:
 - **🚫 Ban** (when the action only deletes) — bans, cleans up and learns the
   text as spam.
 
-Both buttons need the owner or an admin of the reported chat with the **Ban
-users** right. Each chat sends at most 20 reports per 10 minutes; the rest
-are only logged.
+Both buttons need the owner or an admin of the reported chat: **Not spam**
+needs **Ban users**, **Ban** needs **Ban users** and **Delete messages**.
+Each chat sends at most 20 reports per 10 minutes; the rest are only logged.
+A button stays tied to its report, so an old one can never act on a newer
+report, even after a restart or a database reset.
 
 Learned samples work only in the chat where they were taught, at most 1,000
 per kind and chat. They live in `antispam.db` next to trust, warnings and

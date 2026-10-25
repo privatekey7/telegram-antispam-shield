@@ -22,7 +22,7 @@ pub async fn authorize(
     as_group: bool,
     action: AdminAction,
 ) -> Access {
-    let needed = action.privilege(state.settings.warn_limit);
+    let needed = action.privileges(state.settings.warn_limit);
     let caller = match user {
         _ if as_group => Caller::AnonymousAdmin,
         None => Caller::Member(None),

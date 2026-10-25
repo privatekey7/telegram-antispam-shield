@@ -8,8 +8,10 @@
 //! `/warn`) flows back in through [`Shield::learn_spam`], [`Shield::vouch`]
 //! and [`Shield::warn`].
 
+use std::collections::hash_map::RandomState;
 use std::collections::VecDeque;
-use std::time::Instant;
+use std::hash::{BuildHasher, Hasher};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::config::Settings;
 use crate::history::{Echoes, History};
@@ -23,6 +25,10 @@ use crate::warnings::Warnings;
 
 /// Spam reports kept for their buttons.
 const MAX_REPORTS: usize = 1000;
+/// Accounts posting the same long text before earlier copies are deleted
+/// too. With two, either one may be the victim: a troll can repost a
+/// newcomer's question to get it deleted, so only the newer copy goes.
+const WAVE_SENDERS: usize = 3;
 
 /// One group message, reduced to what the engine needs.
 #[derive(Clone, Copy, Debug)]
@@ -61,10 +67,19 @@ impl Decision {
     }
 }
 
+/// What a report's buttons carry. IDs repeat (memory mode starts at 1 on
+/// every start, a reset database too), so a random token ties the button to
+/// the one report it was made for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReportKey {
+    pub id: i64,
+    pub token: u64,
+}
+
 /// Spam reports, in the store or (without one) in memory.
 struct Reports {
     store: Option<Store>,
-    memory: VecDeque<(i64, ReportRecord)>,
+    memory: VecDeque<(ReportKey, ReportRecord)>,
     next_id: i64,
 }
 
@@ -190,32 +205,36 @@ impl Shield {
         (count, ban)
     }
 
-    /// Keep a spam report for its buttons and return its ID.
-    pub fn save_report(&mut self, report: ReportRecord) -> i64 {
+    /// Keep a spam report for its buttons and return what they carry.
+    pub fn save_report(&mut self, report: ReportRecord) -> ReportKey {
+        let token = random_token();
         let reports = &mut self.reports;
         if let Some(store) = &reports.store {
-            match store.add_report(&report, MAX_REPORTS) {
-                Ok(id) => return id,
+            match store.add_report(&report, token, MAX_REPORTS) {
+                Ok(id) => return ReportKey { id, token },
                 Err(e) => tracing::warn!(error = %e, "report_save_failed"),
             }
         }
-        let id = reports.next_id;
+        let key = ReportKey {
+            id: reports.next_id,
+            token,
+        };
         reports.next_id += 1;
         if reports.memory.len() >= MAX_REPORTS {
             reports.memory.pop_front();
         }
-        reports.memory.push_back((id, report));
-        id
+        reports.memory.push_back((key, report));
+        key
     }
 
-    /// The report with `id`, if still kept.
-    pub fn report(&self, id: i64) -> Option<ReportRecord> {
+    /// The report `key` was made for, if still kept.
+    pub fn report(&self, key: ReportKey) -> Option<ReportRecord> {
         let reports = &self.reports;
-        if let Some((_, found)) = reports.memory.iter().find(|(i, _)| *i == id) {
+        if let Some((_, found)) = reports.memory.iter().find(|(k, _)| *k == key) {
             return Some(found.clone());
         }
         let store = reports.store.as_ref()?;
-        store.report(id).unwrap_or_else(|e| {
+        store.report(key.id, key.token).unwrap_or_else(|e| {
             tracing::warn!(error = %e, "report_load_failed");
             None
         })
@@ -231,9 +250,12 @@ impl Shield {
         self.history.recent_from(chat, sender)
     }
 
-    /// Drop expired history; call periodically.
+    /// Drop expired history, lapsed trust and faded warnings; call
+    /// periodically.
     pub fn sweep(&mut self, now: Instant) {
         self.history.sweep(now);
+        self.trust.prune();
+        self.warnings.prune(crate::trust::unix_now());
     }
 
     fn standing(&self, chat: i64, sender: i64, now: Instant) -> Standing {
@@ -248,7 +270,8 @@ impl Shield {
 
     /// Repeats apply to everyone. Campaigns apply to untrusted senders and
     /// count only copies from other untrusted senders: a text a regular
-    /// posted first is not a spam wave.
+    /// posted first is not a spam wave. Earlier copies are deleted only once
+    /// [`WAVE_SENDERS`] accounts have posted the text.
     fn history_rule(&self, chat: i64, echoes: &Echoes, standing: Standing) -> Option<Decision> {
         let limit = self.settings.repeat_limit;
         if limit > 0 && echoes.repeats.len() + 1 >= limit {
@@ -257,14 +280,37 @@ impl Shield {
         if !self.settings.block_campaigns || standing.trusted {
             return None;
         }
-        let untrusted_copies: Vec<i32> = echoes
+        let untrusted: Vec<(i64, i32)> = echoes
             .others
             .iter()
+            .copied()
             .filter(|(sender, _)| !self.trust.is_trusted(chat, *sender))
-            .map(|(_, id)| *id)
             .collect();
-        (!untrusted_copies.is_empty()).then(|| spam(Reason::Campaign, untrusted_copies))
+        if untrusted.is_empty() {
+            return None;
+        }
+        let mut senders: Vec<i64> = untrusted.iter().map(|(sender, _)| *sender).collect();
+        senders.sort_unstable();
+        senders.dedup();
+        let wave = senders.len() + 1 >= WAVE_SENDERS;
+        let earlier = if wave {
+            untrusted.into_iter().map(|(_, id)| id).collect()
+        } else {
+            Vec::new()
+        };
+        Some(spam(Reason::Campaign, earlier))
     }
+}
+
+/// A non-zero token no earlier run is likely to have handed out. Only
+/// uniqueness matters: pressing a button still needs the rights it needs.
+fn random_token() -> u64 {
+    let mut hasher = RandomState::new().build_hasher();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    hasher.write_u128(nanos);
+    hasher.finish().max(1)
 }
 
 fn spam(reason: Reason, also_delete: Vec<i32>) -> Decision {
@@ -365,7 +411,41 @@ mod tests {
         let second = shield.inspect(&msg(2, 2, PROMO), start + mins(80));
 
         assert_eq!(reason(&second), Some(Reason::Campaign));
-        assert_eq!(second.also_delete, vec![1]);
+        assert!(second.also_delete.is_empty(), "the first may be the victim");
+    }
+
+    #[test]
+    fn a_third_account_confirms_the_wave_and_clears_it() {
+        // Arrange
+        let mut shield = shield();
+        let start = Instant::now();
+        shield.inspect(&msg(1, 1, PROMO), start);
+        shield.inspect(&msg(2, 2, PROMO), start + mins(1));
+
+        // Act
+        let third = shield.inspect(&msg(3, 3, PROMO), start + mins(2));
+
+        // Assert
+        assert_eq!(reason(&third), Some(Reason::Campaign));
+        assert_eq!(third.also_delete, vec![1, 2]);
+    }
+
+    #[test]
+    fn a_repost_does_not_delete_the_original() {
+        // Arrange: a newcomer asks a long question; a troll reposts it.
+        let mut shield = shield();
+        let start = Instant::now();
+        let question = "Подскажите пожалуйста, как правильно настроить мост между сетями, \
+                        у меня третий день висит транзакция";
+        let original = shield.inspect(&msg(1, 10, question), start);
+
+        // Act
+        let repost = shield.inspect(&msg(66, 11, question), start + mins(3));
+
+        // Assert
+        assert_eq!(original.verdict, Verdict::Allow);
+        assert_eq!(reason(&repost), Some(Reason::Campaign));
+        assert!(!repost.also_delete.contains(&10));
     }
 
     #[test]
@@ -490,10 +570,40 @@ mod tests {
             text: "spam".to_string(),
         };
 
-        let id = shield.save_report(report.clone());
+        let key = shield.save_report(report.clone());
 
-        assert_eq!(shield.report(id), Some(report));
-        assert_eq!(shield.report(id + 1), None);
+        assert_eq!(shield.report(key), Some(report));
+        assert_eq!(
+            shield.report(ReportKey {
+                id: key.id + 1,
+                ..key
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn a_button_from_before_a_restart_matches_no_newer_report() {
+        // Arrange: report 1 before a restart without a store, report 1 after.
+        let mut before = shield();
+        let old_button = before.save_report(ReportRecord {
+            chat_id: CHAT,
+            sender_id: 1,
+            text: "false positive".to_string(),
+        });
+        let mut after = shield();
+        let new_button = after.save_report(ReportRecord {
+            chat_id: CHAT - 1,
+            sender_id: 2,
+            text: "real spam".to_string(),
+        });
+
+        // Act
+        let pressed_old = after.report(old_button);
+
+        // Assert
+        assert_eq!(old_button.id, new_button.id, "IDs repeat after a restart");
+        assert_eq!(pressed_old, None);
     }
 
     #[test]
@@ -553,7 +663,7 @@ mod tests {
         let edited = shield.inspect(&edit(2, 2, PROMO), start + mins(10));
 
         assert_eq!(reason(&edited), Some(Reason::Campaign));
-        assert_eq!(edited.also_delete, vec![1]);
+        assert!(edited.also_delete.is_empty());
     }
 
     #[test]

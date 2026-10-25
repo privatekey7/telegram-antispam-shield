@@ -4,6 +4,7 @@
 //! only talks to Telegram: reading updates, deleting, banning and muting.
 
 mod actions;
+mod backlog;
 mod cas;
 mod chats;
 mod commands;
@@ -13,19 +14,25 @@ mod polling;
 mod reports;
 mod rights;
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+
+use teloxide::types::Update;
 
 use telegram_antispam_shield::config::Settings;
 use telegram_antispam_shield::flood::FloodGuard;
 use telegram_antispam_shield::shield::Shield;
 
+pub use backlog::CHAT_QUEUE;
 pub use handlers::{on_chat_member, on_edited_message, on_message};
 pub use polling::Poller;
 pub use reports::on_callback;
 
 /// How often expired flood and history entries are dropped.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(10 * 60);
+/// Unknown chats remembered for the once-per-chat log line.
+const MAX_UNKNOWN_CHATS: usize = 1000;
 
 /// Shared application state injected into every handler.
 pub struct AppState {
@@ -40,6 +47,10 @@ pub struct AppState {
     cas: cas::Cas,
     /// Held only for synchronous checks, never across an `.await`.
     report_budget: Mutex<reports::ReportBudget>,
+    /// Shared with the poller: updates handed over and not yet taken.
+    pub backlog: Arc<backlog::Backlog>,
+    /// Chats outside the allowlist already logged once.
+    unknown_chats: Mutex<HashSet<i64>>,
 }
 
 impl AppState {
@@ -52,6 +63,8 @@ impl AppState {
             chats: tokio::sync::Mutex::new(chats::ChatCache::default()),
             cas: cas::Cas::new(settings.cas.clone()),
             report_budget: Mutex::new(reports::ReportBudget::default()),
+            backlog: Arc::default(),
+            unknown_chats: Mutex::default(),
             settings,
         }
     }
@@ -68,6 +81,25 @@ impl AppState {
 
     fn report_budget(&self) -> MutexGuard<'_, reports::ReportBudget> {
         self.report_budget.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl AppState {
+    /// Whether `chat`, outside the allowlist, is seen for the first time
+    /// (worth one log line). Bounded: strangers cannot grow the set forever.
+    fn first_sight_of_unknown(&self, chat: i64) -> bool {
+        let mut seen = self.unknown_chats.lock().unwrap_or_else(|e| e.into_inner());
+        if seen.len() >= MAX_UNKNOWN_CHATS {
+            seen.clear();
+        }
+        seen.insert(chat)
+    }
+}
+
+/// First in the handler tree: a worker took `update` off its chat's queue.
+pub fn taken(update: Update, state: Arc<AppState>) {
+    if let Some(chat) = update.chat() {
+        state.backlog.taken(chat.id.0);
     }
 }
 

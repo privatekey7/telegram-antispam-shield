@@ -9,8 +9,8 @@ GitHub builds the image and deploys it; the server only pulls and runs it.
 
 ```
 push to main → CI green → Deploy workflow
-                            ├─ build image → ghcr.io/<you>/telegram-antispam-shield:sha-<commit>
-                            └─ ssh deploy@server "sha-<commit>"   (forced command → deploy.sh)
+                            ├─ build + sign image → ghcr.io/<you>/telegram-antispam-shield:deploy-<commit>
+                            └─ ssh deploy@server "deploy-<commit>@sha256:<digest>"   (forced command → deploy.sh)
                                    └─ docker compose pull && up -d, roll back if the bot does not stay up
 ```
 
@@ -18,8 +18,10 @@ Why this shape (details in [ADR 0005](adr/0005-vps-deploy.md)):
 
 - **No builds on the server.** Compiling Rust needs gigabytes of disk and RAM;
   the runtime image is ~100 MB and the bot uses ~30 MB of RAM.
-- **Immutable tags.** Every image is tagged by commit SHA, never `latest`, so a
-  rollback is "deploy the previous SHA".
+- **Immutable images.** Every image is tagged by commit SHA, never `latest`,
+  and the server pulls it by digest, so it runs exactly what CI built and
+  signed. A rollback is "deploy the previous tag". Deploy tags start with
+  `deploy-`, so they never overwrite the `sha-<commit>` tags of releases.
 - **Least privilege.** CI holds an SSH key that can only run `deploy.sh` with a
   strictly validated tag. The container runs as non-root with a read-only
   filesystem, no capabilities and a 128 MB memory cap.
@@ -168,6 +170,17 @@ cancel a queued deploy.
 If you edit `deploy.yml`, keep these checks. Required reviewers on
 `production` are the backstop if a check breaks.
 
+Releases have a similar guard: `release.yml` publishes only a tag whose
+commit is on `main` and passed CI. To keep a leaked token from pushing
+release tags at all, add a tag ruleset (**Settings → Rules → Rulesets → New
+tag ruleset**, target `v*`) that restricts creation, update and deletion to
+maintainers.
+
+**Upgrading from 0.2.x:** the Deploy workflow now sends
+`deploy-<commit>@sha256:<digest>` instead of `sha-<commit>`. Copy the new
+`deploy/deploy.sh` to the server before the first deploy of 0.3, or the old
+script rejects the new tag (and changes nothing).
+
 ## Operations
 
 All commands run on the server from `/opt/antispam-shield`.
@@ -178,7 +191,8 @@ All commands run on the server from `/opt/antispam-shield`.
 | Status | `docker compose ps` |
 | Restart | `docker compose restart bot` |
 | Change settings | edit `.env`, then `docker compose up -d` |
-| Roll back | `./deploy.sh sha-<previous commit>` (previous tag is in `.env.previous`) |
+| Roll back | `./deploy.sh deploy-<previous commit>@sha256:<digest>` (the previous value is in `.env.previous`) |
+| Verify a deployed image | `cosign verify ghcr.io/<you>/telegram-antispam-shield@sha256:<digest> --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity-regexp '^https://github\.com/<you>/telegram-antispam-shield/\.github/workflows/deploy\.yml@refs/heads/main$'` |
 | Stop | `docker compose down` |
 
 ### Troubleshooting

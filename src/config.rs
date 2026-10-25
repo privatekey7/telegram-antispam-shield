@@ -55,8 +55,9 @@ pub struct Settings {
     pub exempt_admins: bool,
     /// How long to cache a chat's admin list, in seconds.
     pub admin_cache_ttl_secs: u64,
-    /// Allowlist of chat IDs the bot will operate in. `None` = every chat
-    /// (backward-compatible default). When `Some`, only listed chats are moderated.
+    /// Allowlist of chat IDs the bot will operate in. `None` = every chat,
+    /// which [`Settings::from_env`] allows only with `ANTISPAM_ALLOW_ALL_CHATS`;
+    /// an empty set (no list yet) = no chat.
     pub allowed_chats: Option<HashSet<i64>>,
     /// When true, leave any chat that is not in `allowed_chats` on first sight.
     pub leave_unknown_chats: bool,
@@ -202,18 +203,43 @@ impl Settings {
     /// Risky but valid choices worth a warning at startup.
     pub fn access_warnings(&self) -> Vec<&'static str> {
         let mut warnings = Vec::new();
-        if self.allowed_chats.is_none() {
-            warnings.push(
-                "ANTISPAM_ALLOWED_CHATS is not set: anyone can add the bot to a group, \
+        match &self.allowed_chats {
+            None => warnings.push(
+                "ANTISPAM_ALLOW_ALL_CHATS is on: anyone can add the bot to a group, \
                  use your hosting, send you reports and fill the bot's total sample \
-                 budget. Set it to your group IDs.",
-            );
+                 budget. Prefer ANTISPAM_ALLOWED_CHATS with your group IDs.",
+            ),
+            Some(chats) if chats.is_empty() => {
+                warnings.push(
+                    "ANTISPAM_ALLOWED_CHATS is not set: the bot moderates no chat yet. \
+                     Add it to your group and write there; the group's ID appears in \
+                     this log as chat_not_allowed. Put it in ANTISPAM_ALLOWED_CHATS \
+                     and restart.",
+                );
+                if self.leave_unknown_chats {
+                    warnings.push(
+                        "ANTISPAM_LEAVE_UNKNOWN_CHATS is on with no allowlist: the bot \
+                         leaves every group it sees.",
+                    );
+                }
+            }
+            Some(_) => {}
         }
         if self.owner_id.is_none() {
             warnings.push("ANTISPAM_OWNER_ID is not set: /status shows nothing to anyone.");
         }
+        if self.cas.enabled && !is_https(&self.cas.url) {
+            warnings.push(
+                "ANTISPAM_CAS_URL is not https: lookups can be read and answered by \
+                 anyone on the network path.",
+            );
+        }
         warnings
     }
+}
+
+fn is_https(url: &str) -> bool {
+    url.trim().to_ascii_lowercase().starts_with("https://")
 }
 
 fn env_secs(key: &str, default: Duration) -> Duration {
@@ -251,9 +277,10 @@ fn env_bool(key: &str, default: bool) -> bool {
 }
 
 impl Settings {
-    /// Read the settings. Access-control values (`ANTISPAM_ALLOWED_CHATS`,
-    /// `ANTISPAM_OWNER_ID`) fail closed: a typo stops the bot with an error
-    /// instead of silently opening it to every chat.
+    /// Read the settings. Access control fails closed: without
+    /// `ANTISPAM_ALLOWED_CHATS` (or an explicit `ANTISPAM_ALLOW_ALL_CHATS`)
+    /// the bot serves no chat, and a typo in it or in `ANTISPAM_OWNER_ID`
+    /// stops the bot with an error.
     pub fn from_env() -> Result<Self> {
         let d = Settings::default();
         Ok(Settings {
@@ -275,13 +302,18 @@ impl Settings {
             ),
             exempt_admins: env_bool("ANTISPAM_EXEMPT_ADMINS", d.exempt_admins),
             admin_cache_ttl_secs: env_number("ANTISPAM_ADMIN_CACHE_TTL", d.admin_cache_ttl_secs),
-            allowed_chats: parse_id_set(env::var("ANTISPAM_ALLOWED_CHATS").ok())?,
+            allowed_chats: resolve_allowlist(
+                env::var("ANTISPAM_ALLOWED_CHATS").ok(),
+                env_bool("ANTISPAM_ALLOW_ALL_CHATS", false),
+            )?,
             leave_unknown_chats: env_bool("ANTISPAM_LEAVE_UNKNOWN_CHATS", d.leave_unknown_chats),
             owner_id: parse_owner_id(env::var("ANTISPAM_OWNER_ID").ok())?,
             flood: flood_from_env(),
             trust: TrustConfig {
                 after_messages: env_number("ANTISPAM_TRUST_AFTER", d.trust.after_messages),
                 min_chars: env_number("ANTISPAM_TRUST_MIN_CHARS", d.trust.min_chars),
+                expires_after: trust_ttl(env::var("ANTISPAM_TRUST_TTL_DAYS").ok())
+                    .unwrap_or(d.trust.expires_after),
             },
             history_window: env_secs("ANTISPAM_HISTORY_WINDOW_SECS", d.history_window),
             repeat_limit: env_number("ANTISPAM_REPEAT_LIMIT", d.repeat_limit),
@@ -386,6 +418,25 @@ fn parse_list(raw: Option<String>) -> Vec<String> {
         .filter(|p| !p.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+/// `ANTISPAM_TRUST_TTL_DAYS`: `0` = trust never lapses; `None` when unset or
+/// not a number (the default applies).
+fn trust_ttl(raw: Option<String>) -> Option<Option<Duration>> {
+    let days = raw?.trim().parse::<u64>().ok()?;
+    Some((days > 0).then(|| Duration::from_secs(days.saturating_mul(24 * 60 * 60))))
+}
+
+/// The allowlist from `ANTISPAM_ALLOWED_CHATS`. Without one the bot would
+/// serve any group a stranger adds it to, so an unset or blank list allows
+/// no chat (the bot only logs each group's ID, to be added) unless
+/// `allow_all` says every chat is intended.
+fn resolve_allowlist(raw: Option<String>, allow_all: bool) -> Result<Option<HashSet<i64>>> {
+    match parse_id_set(raw)? {
+        Some(set) => Ok(Some(set)),
+        None if allow_all => Ok(None),
+        None => Ok(Some(HashSet::new())),
+    }
 }
 
 /// Parse a list of chat IDs separated by commas, spaces, semicolons or newlines.
@@ -534,8 +585,57 @@ mod tests {
 
         // Assert
         assert_eq!(open_warnings.len(), 2);
-        assert!(open_warnings[0].contains("ANTISPAM_ALLOWED_CHATS"));
+        assert!(open_warnings[0].contains("ANTISPAM_ALLOW_ALL_CHATS"));
         assert!(closed_warnings.is_empty());
+    }
+
+    #[test]
+    fn a_missing_allowlist_allows_no_chat_unless_all_chats_are_allowed() {
+        // Arrange
+        let listed = Some("-1001234".to_string());
+
+        // Act
+        let unset = resolve_allowlist(None, false).unwrap();
+        let blank = resolve_allowlist(Some(" ".to_string()), false).unwrap();
+        let all = resolve_allowlist(None, true).unwrap();
+        let with_list = resolve_allowlist(listed, true).unwrap();
+
+        // Assert
+        assert_eq!(unset, Some(HashSet::new()));
+        assert_eq!(blank, Some(HashSet::new()));
+        assert_eq!(all, None);
+        assert_eq!(with_list, Some([-1001234].into_iter().collect()));
+        let no_list = Settings {
+            allowed_chats: unset,
+            ..Settings::default()
+        };
+        assert!(!no_list.chat_allowed(-1001234));
+        assert!(no_list.access_warnings()[0].contains("chat_not_allowed"));
+    }
+
+    #[test]
+    fn trust_ttl_parsing() {
+        assert_eq!(
+            trust_ttl(Some("30".into())),
+            Some(Some(Duration::from_secs(30 * 24 * 60 * 60)))
+        );
+        assert_eq!(trust_ttl(Some("0".into())), Some(None), "0 = never lapses");
+        assert_eq!(trust_ttl(Some("soon".into())), None);
+        assert_eq!(trust_ttl(None), None);
+    }
+
+    #[test]
+    fn plain_http_for_cas_is_warned_about() {
+        let s = Settings {
+            allowed_chats: Some([-1].into_iter().collect()),
+            owner_id: Some(1),
+            cas: CasConfig {
+                url: "http://cas.example".to_string(),
+                ..CasConfig::default()
+            },
+            ..Settings::default()
+        };
+        assert!(s.access_warnings()[0].contains("ANTISPAM_CAS_URL"));
     }
 
     #[test]

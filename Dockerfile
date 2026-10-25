@@ -7,26 +7,29 @@ WORKDIR /app
 
 # `rustls` is used (see Cargo.toml), so no OpenSSL/system TLS libs are needed.
 COPY . .
-RUN cargo build --release --locked
+RUN cargo build --release --locked \
+    && mkdir /app/data-dir
 
 # ---- Runtime stage ----------------------------------------------------------
-FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS runtime
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --no-create-home appuser     && mkdir /data && chown appuser /data
+# Distroless: glibc, CA certificates and nothing else. No shell, no package
+# manager, so a compromised process has no tools to work with. Debian 13
+# matches the builder's glibc.
+FROM gcr.io/distroless/cc-debian13@sha256:d74d144baa124dd9defd01d71872bb56c49d4441dba6153ccf790364f97e64b1 AS runtime
 
 COPY --from=builder /app/target/release/telegram-antispam-shield \
      /usr/local/bin/telegram-antispam-shield
 
 # Trusted members are kept in /data/antispam.db (ADR 0007). A named volume
-# mounted here inherits the ownership above; without one the bot still runs
-# and keeps state in a throwaway anonymous volume.
+# mounted here inherits this ownership; without one the bot still runs and
+# keeps state in a throwaway anonymous volume. UID 10001, as in earlier
+# images, so existing volumes stay writable.
+COPY --from=builder --chown=10001:10001 /app/data-dir /data
 ENV ANTISPAM_DATA_DIR=/data
 VOLUME /data
 
-# Run as a non-root, least-privilege user.
-USER appuser
+# Run as a non-root, least-privilege user (numeric: distroless has no
+# useradd, and none is needed).
+USER 10001:10001
 
 # Healthy while the poller reaches Telegram: it writes a heartbeat to
 # /tmp/antispam-heartbeat after every getUpdates call, and the subcommand

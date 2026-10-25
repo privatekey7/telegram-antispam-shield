@@ -14,7 +14,7 @@
 //! polling.
 
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::stream::{self, BoxStream, StreamExt};
@@ -27,6 +27,8 @@ use teloxide::stop::{mk_stop_token, StopFlag, StopToken};
 use teloxide::types::{AllowedUpdate, ExternalReplyInfo, MessageKind, UpdateKind};
 use teloxide::update_listeners::{AsUpdateStream, UpdateListener};
 use teloxide::RequestError;
+
+use super::backlog::Backlog;
 
 /// How long Telegram holds a `getUpdates` call open waiting for updates.
 const POLL_TIMEOUT_SECS: u32 = 10;
@@ -91,6 +93,9 @@ pub struct Poller {
     /// first call after an upgrade would otherwise leave new update types
     /// (such as `edited_message`) switched off until the next restart.
     allowed_updates: Option<Vec<AllowedUpdate>>,
+    /// Updates handed over per chat, so a full chat queue drops its own
+    /// updates instead of stalling the dispatcher (see `backlog`).
+    backlog: Arc<Backlog>,
     token: StopToken,
     flag: StopFlag,
 }
@@ -98,7 +103,7 @@ pub struct Poller {
 impl Poller {
     /// Drop a webhook left over from another deployment (Telegram refuses
     /// `getUpdates` while one is set) and get ready to poll.
-    pub async fn new(bot: Bot) -> Poller {
+    pub async fn new(bot: Bot, backlog: Arc<Backlog>) -> Poller {
         if let Err(e) = bot.delete_webhook().await {
             tracing::warn!(error = %e, "delete_webhook_failed");
         }
@@ -107,8 +112,21 @@ impl Poller {
             bot,
             offset: 0,
             allowed_updates: None,
+            backlog,
             token,
             flag,
+        }
+    }
+
+    /// Whether `update` may go to the dispatcher now. Updates without a chat
+    /// go to a worker that never blocks; unreadable ones are dropped by the
+    /// dispatcher before any worker sees them.
+    fn admit(&self, update: &Update) -> bool {
+        match update.chat() {
+            Some(chat) if !matches!(update.kind, UpdateKind::Error(_)) => {
+                self.backlog.admit(chat.id.0)
+            }
+            _ => true,
         }
     }
 
@@ -170,7 +188,10 @@ impl<'a> AsUpdateStream<'a> for Poller {
         stream::unfold((self, VecDeque::new()), |(poller, mut buffer)| async move {
             loop {
                 if let Some(update) = buffer.pop_front() {
-                    return Some((Ok(update), (poller, buffer)));
+                    if poller.admit(&update) {
+                        return Some((Ok(update), (poller, buffer)));
+                    }
+                    continue;
                 }
                 let stop = poller.flag.clone();
                 if stop.is_stopped() {
@@ -379,9 +400,26 @@ mod tests {
             bot: Bot::new("1:test"),
             offset: 0,
             allowed_updates: None,
+            backlog: Arc::default(),
             token: mk_stop_token().0,
             flag: mk_stop_token().1,
         }
+    }
+
+    #[test]
+    fn updates_of_a_full_chat_are_held_back() {
+        // Arrange
+        let poller = poller();
+        let update = parse(&mut command_replying_elsewhere()).unwrap();
+        for _ in 0..super::super::backlog::CHAT_QUEUE {
+            assert!(poller.admit(&update));
+        }
+
+        // Act
+        let over = poller.admit(&update);
+
+        // Assert
+        assert!(!over);
     }
 
     #[test]

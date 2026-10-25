@@ -17,10 +17,41 @@ jobs:
   verify:
     name: check versions
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # To read the CI result for the tagged commit.
+      actions: read
     outputs:
       version: ${{ steps.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history, so the next step can see origin/main.
+          fetch-depth: 0
+          persist-credentials: false
+      # A tag on an untested branch commit would otherwise publish signed
+      # images that every `0.x` user pulls.
+      - name: Commit is on main and passed CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_SHA is not on main; refusing to release"
+            exit 1
+          fi
+          # CI may still be running for the merge commit: wait up to 20 min.
+          for _ in $(seq 40); do
+            conclusion="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
+              --commit "$GITHUB_SHA" --event push --limit 1 \
+              --json status,conclusion --jq '.[0] | "\(.status)/\(.conclusion)"')"
+            case "$conclusion" in
+              completed/success) exit 0 ;;
+              completed/*) echo "::error::CI for $GITHUB_SHA ended as $conclusion"; exit 1 ;;
+            esac
+            sleep 30
+          done
+          echo "::error::no finished CI run for $GITHUB_SHA"
+          exit 1
       - id: check
         name: Tag matches Cargo.toml and compose.yaml
         run: |
@@ -57,20 +88,20 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Platform slug
         run: |
           platform="${{ matrix.platform }}"
           echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       # Native runners per arch: a Rust build under QEMU takes far longer.
       - id: build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           platforms: ${{ matrix.platform }}
@@ -87,7 +118,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/digests"
           digest="${{ steps.build.outputs.digest }}"
           touch "$RUNNER_TEMP/digests/${digest#sha256:}"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: digests-${{ env.PLATFORM_PAIR }}
           path: ${{ runner.temp }}/digests/*
@@ -105,21 +136,22 @@ jobs:
       # workflow, issued against the job's OIDC token.
       id-token: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: ${{ runner.temp }}/digests
           pattern: digests-*
           merge-multiple: true
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       # Tags: 0.2.0, 0.2 (and 1 from 1.0 on) plus sha-<commit>. No `latest`:
-      # users pin a version line and still get patch releases.
+      # users pin a version line and still get patch releases. Auto-deploy
+      # images use `deploy-<commit>`, so the two never overwrite each other.
       - id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ${{ env.IMAGE }}
           flavor: latest=false
@@ -137,7 +169,7 @@ jobs:
             $(printf '${{ env.IMAGE }}@sha256:%s ' *)
       - name: Inspect
         run: docker buildx imagetools inspect "${{ env.IMAGE }}:${{ needs.verify.outputs.version }}"
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
       # Signed by digest, so the signature covers every tag of this manifest
       # and cannot be moved to another image. Verification: docs/hosting.md.
       - name: Sign image
@@ -155,7 +187,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Release notes from CHANGELOG
         env:
           VERSION: ${{ needs.verify.outputs.version }}

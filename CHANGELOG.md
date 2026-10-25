@@ -6,6 +6,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-25
+
+### Upgrade notes
+- **The bot now moderates only the chats in `ANTISPAM_ALLOWED_CHATS`.**
+  Without the list it moderates no chat and logs `chat_not_allowed` with the
+  ID of each group it sees. Add your group IDs before upgrading, or set
+  `ANTISPAM_ALLOW_ALL_CHATS=true` to keep the old behaviour (not
+  recommended). See ADR 0012.
+- `/spam`, `/ban`, `/warn` and the report's **Ban** button now need the
+  **Delete messages** right as well as **Ban users**.
+- The database schema moves to version 4 (report tokens). Back up
+  `antispam.db` before upgrading; v0.2.x cannot use report buttons made by
+  v0.3. Report buttons from v0.2.x keep working.
+- Auto-deploy only: the Deploy workflow sends
+  `deploy-<commit>@sha256:<digest>` to the server. Copy the new
+  `deploy/deploy.sh` to the server first (docs/auto-deploy.md).
+- compose.yaml defaults to the `0.3` image line: download the new
+  compose.yaml to upgrade.
+
+### Changed
+- Trust lapses after 90 days without a clean message
+  (`ANTISPAM_TRUST_TTL_DAYS`, `0` = never); the member then earns it again.
+- The campaign rule deletes earlier copies of a text only once three
+  accounts have posted it; with two, only the newer copy is deleted.
+- The runtime image is distroless (no shell, no package manager) and still
+  runs as UID 10001. compose.yaml adds `pids_limit: 128`.
+
+### Fixed
+- Poll questions and options, checklists, venues and contacts are now
+  checked like text. Before, spam in them was never seen.
+- In a forum topic, `/ban` or `/spam` without a reply no longer targets the
+  topic's creation notice (and so the topic's creator); the bot shows the
+  usual hint.
+- Docs: the `docker run` example mounts the tmpfs the health check needs and
+  sets the same limits as compose.yaml; signing is documented from 0.2.1
+  on; `ANTISPAM_CAS_URL` is documented; the data volume is recommended; the
+  0.2.1 notes now give the real retry cap (5 s).
+
+### Security
+- Report buttons carry a random token next to the report ID. Before, IDs
+  started over after a restart without the data volume or a database
+  reset, and an old **Not spam** or **Ban** button acted on whichever new
+  report had its number, possibly in another chat.
+- One busy chat can no longer stall every other chat. The poller drops an
+  update of a chat whose queue (now 256) is full, or when 4,096 updates
+  wait in total, instead of blocking the dispatcher; drops are logged
+  (`chat_backlog_full`, `chat_backlog_recovered`).
+- A failed CAS lookup pauses CAS for a minute, so an outage costs one timeout
+  instead of up to 5 s per message, and CAS answers over 64 KB are refused.
+  A CAS URL that is not https gets a startup warning.
+- Actions that delete messages need the **Delete messages** right: an admin
+  with only **Ban users** could make the bot delete messages, and through
+  `/spam` teach it to delete other members' messages.
+- A repost of someone's long message no longer gets the original deleted
+  through the campaign rule.
+- Direction overrides and isolates (U+202A–U+202E, U+2066–U+2069) inside a
+  word count as hidden characters. Reports split quoted text on every line
+  break a client may render (U+2028, U+2029, U+0085, …) and drop direction
+  controls, so spam cannot fake lines of the report.
+- Members silent for a month (untrusted) or past their trust (trusted) and
+  warnings that no longer count are deleted from the database.
+- Releases are published only for a tag whose commit is on `main` and passed
+  CI. GitHub Actions are pinned to commit SHAs. Auto-deploy images are
+  tagged `deploy-<commit>` (no longer clashing with the release's
+  `sha-<commit>`), signed with cosign and pulled by digest.
+
 ## [0.2.2] - 2026-10-25
 
 ### Fixed
@@ -95,7 +161,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   amplified. Reports mark everything from the reported chat (title, name in
   «», each line of the text behind `│`) and never show link previews.
 - Deletes, bans and mutes are retried once after Telegram's `retry_after`
-  (up to 30 s) instead of being lost during a raid.
+  (up to 5 s) instead of being lost during a raid.
 - The image has a `HEALTHCHECK` (`telegram-antispam-shield healthcheck`, fed
   by a heartbeat after each `getUpdates`); compose.yaml mounts a tmpfs on
   `/tmp` for it.
@@ -255,7 +321,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-stage, non-root Dockerfile and Railway deploy config.
 - GitHub Actions CI: rustfmt, clippy, tests, `cargo audit`, gitleaks.
 
-[Unreleased]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.1.0...v0.2.0

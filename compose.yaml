@@ -10,7 +10,7 @@ name: antispam-shield
 
 services:
   bot:
-    image: ${IMAGE:-ghcr.io/privatekey7/telegram-antispam-shield}:${IMAGE_TAG:-0.2}
+    image: ${IMAGE:-ghcr.io/privatekey7/telegram-antispam-shield}:${IMAGE_TAG:-0.3}
     restart: unless-stopped
     env_file: .env
     volumes:
@@ -26,6 +26,8 @@ services:
     # The bot needs ~30 MB; the caps keep it from crowding out other services.
     mem_limit: 128m
     cpus: 0.5
+    # A few runtime threads plus blocking DNS lookups; caps a fork bomb.
+    pids_limit: 128
     logging:
       driver: json-file
       options:

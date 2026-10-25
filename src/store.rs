@@ -57,6 +57,10 @@ const MIGRATIONS: &[&str] = &[
         added_at   INTEGER NOT NULL DEFAULT (unixepoch()),
         UNIQUE (chat_id, kind, text)
     );",
+    // A random token per report, carried by its buttons: report IDs repeat
+    // after a database reset, tokens do not. Older reports keep token 0, which
+    // only buttons from before this migration (`ham:<id>`) carry.
+    "ALTER TABLE reports ADD COLUMN token INTEGER NOT NULL DEFAULT 0;",
 ];
 
 /// One member's standing in one chat.
@@ -64,6 +68,9 @@ const MIGRATIONS: &[&str] = &[
 pub struct MemberRecord {
     pub clean_messages: u32,
     pub trusted: bool,
+    /// Unix seconds of the last clean message or approval (stored as
+    /// `updated_at`).
+    pub active_at: i64,
 }
 
 /// Kind of a learned sample.
@@ -144,14 +151,15 @@ impl Store {
     /// Every stored member, keyed by `(chat_id, user_id)`.
     pub fn members(&self) -> Result<Vec<((i64, i64), MemberRecord)>> {
         let conn = self.conn();
-        let mut stmt =
-            conn.prepare("SELECT chat_id, user_id, clean_messages, trusted FROM members")?;
+        let mut stmt = conn
+            .prepare("SELECT chat_id, user_id, clean_messages, trusted, updated_at FROM members")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 (row.get(0)?, row.get(1)?),
                 MemberRecord {
                     clean_messages: row.get(2)?,
                     trusted: row.get(3)?,
+                    active_at: row.get(4)?,
                 },
             ))
         })?;
@@ -162,12 +170,31 @@ impl Store {
     pub fn save_member(&self, chat_id: i64, user_id: i64, record: MemberRecord) -> Result<()> {
         self.conn().execute(
             "INSERT INTO members (chat_id, user_id, clean_messages, trusted, updated_at)
-             VALUES (?1, ?2, ?3, ?4, unixepoch())
+             VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT (chat_id, user_id) DO UPDATE SET
                  clean_messages = excluded.clean_messages,
                  trusted = excluded.trusted,
                  updated_at = excluded.updated_at",
-            params![chat_id, user_id, record.clean_messages, record.trusted],
+            params![
+                chat_id,
+                user_id,
+                record.clean_messages,
+                record.trusted,
+                record.active_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Delete untrusted members last active before `untrusted_before` and,
+    /// if given, trusted ones last active before `trusted_before` (Unix
+    /// seconds).
+    pub fn prune_members(&self, untrusted_before: i64, trusted_before: Option<i64>) -> Result<()> {
+        self.conn().execute(
+            "DELETE FROM members
+             WHERE (trusted = 0 AND updated_at < ?1)
+                OR (trusted = 1 AND ?2 IS NOT NULL AND updated_at < ?2)",
+            params![untrusted_before, trusted_before],
         )?;
         Ok(())
     }
@@ -235,12 +262,21 @@ impl Store {
         Ok(())
     }
 
-    /// Save a report and return its ID; only the newest `keep` are kept.
-    pub fn add_report(&self, report: &ReportRecord, keep: usize) -> Result<i64> {
+    /// Delete warnings last given before `before` (Unix seconds): they no
+    /// longer count.
+    pub fn prune_warnings(&self, before: i64) -> Result<()> {
+        self.conn()
+            .execute("DELETE FROM warnings WHERE updated_at < ?1", [before])?;
+        Ok(())
+    }
+
+    /// Save a report under `token` and return its ID; only the newest `keep`
+    /// are kept.
+    pub fn add_report(&self, report: &ReportRecord, token: u64, keep: usize) -> Result<i64> {
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO reports (chat_id, sender_id, text) VALUES (?1, ?2, ?3)",
-            params![report.chat_id, report.sender_id, report.text],
+            "INSERT INTO reports (chat_id, sender_id, text, token) VALUES (?1, ?2, ?3, ?4)",
+            params![report.chat_id, report.sender_id, report.text, token as i64],
         )?;
         let id = conn.last_insert_rowid();
         conn.execute(
@@ -250,12 +286,12 @@ impl Store {
         Ok(id)
     }
 
-    /// The report with `id`, if it is still kept.
-    pub fn report(&self, id: i64) -> Result<Option<ReportRecord>> {
+    /// The report with `id` and `token`, if it is still kept.
+    pub fn report(&self, id: i64, token: u64) -> Result<Option<ReportRecord>> {
         self.conn()
             .query_row(
-                "SELECT chat_id, sender_id, text FROM reports WHERE id = ?1",
-                [id],
+                "SELECT chat_id, sender_id, text FROM reports WHERE id = ?1 AND token = ?2",
+                params![id, token as i64],
                 |row| {
                     Ok(ReportRecord {
                         chat_id: row.get(0)?,
@@ -298,10 +334,12 @@ mod tests {
         let first = MemberRecord {
             clean_messages: 2,
             trusted: false,
+            active_at: 1_800_000_000,
         };
         let second = MemberRecord {
             clean_messages: 3,
             trusted: true,
+            active_at: 1_800_000_100,
         };
 
         store.save_member(-100, 42, first).unwrap();
@@ -397,6 +435,43 @@ mod tests {
     }
 
     #[test]
+    fn pruning_keeps_recent_members_and_warnings() {
+        // Arrange
+        let store = Store::in_memory().unwrap();
+        let member = |trusted, active_at| MemberRecord {
+            clean_messages: 1,
+            trusted,
+            active_at,
+        };
+        store.save_member(-1, 1, member(false, 100)).unwrap();
+        store.save_member(-1, 2, member(false, 900)).unwrap();
+        store.save_member(-1, 3, member(true, 100)).unwrap();
+        let warning = |updated_at| WarningRecord {
+            count: 1,
+            updated_at,
+        };
+        store.save_warning(-1, 1, warning(100)).unwrap();
+        store.save_warning(-1, 2, warning(900)).unwrap();
+
+        // Act
+        store.prune_members(500, None).unwrap();
+        let kept_without_ttl = store.members().unwrap().len();
+        store.prune_members(500, Some(500)).unwrap();
+        store.prune_warnings(500).unwrap();
+
+        // Assert
+        assert_eq!(kept_without_ttl, 2, "trust that never lapses is kept");
+        let members: Vec<i64> = store
+            .members()
+            .unwrap()
+            .iter()
+            .map(|((_, user), _)| *user)
+            .collect();
+        assert_eq!(members, vec![2]);
+        assert_eq!(store.warnings().unwrap(), vec![((-1, 2), warning(900))]);
+    }
+
+    #[test]
     fn warnings_round_trip() {
         let store = Store::in_memory().unwrap();
         let record = WarningRecord {
@@ -415,13 +490,38 @@ mod tests {
             sender_id: 7,
             text: text.to_string(),
         };
-        let first = store.add_report(&report("one"), 2).unwrap();
-        let second = store.add_report(&report("two"), 2).unwrap();
-        let third = store.add_report(&report("three"), 2).unwrap();
+        let first = store.add_report(&report("one"), 1, 2).unwrap();
+        let second = store.add_report(&report("two"), 2, 2).unwrap();
+        let third = store.add_report(&report("three"), 3, 2).unwrap();
 
-        assert_eq!(store.report(first).unwrap(), None);
-        assert_eq!(store.report(second).unwrap(), Some(report("two")));
-        assert_eq!(store.report(third).unwrap(), Some(report("three")));
+        assert_eq!(store.report(first, 1).unwrap(), None);
+        assert_eq!(store.report(second, 2).unwrap(), Some(report("two")));
+        assert_eq!(store.report(third, 3).unwrap(), Some(report("three")));
+    }
+
+    #[test]
+    fn a_report_needs_its_token() {
+        // Arrange
+        let store = Store::in_memory().unwrap();
+        let report = ReportRecord {
+            chat_id: -1,
+            sender_id: 7,
+            text: "spam".to_string(),
+        };
+        let id = store.add_report(&report, 0xfeed, 10).unwrap();
+
+        // Act
+        let right = store.report(id, 0xfeed).unwrap();
+        let wrong = store.report(id, 0xbeef).unwrap();
+        let legacy = store.report(id, 0).unwrap();
+
+        // Assert
+        assert_eq!(right, Some(report));
+        assert_eq!(wrong, None);
+        assert_eq!(
+            legacy, None,
+            "only reports from before migration 4 have token 0"
+        );
     }
 
     #[test]

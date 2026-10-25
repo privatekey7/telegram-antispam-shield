@@ -9,8 +9,9 @@
 //! * "Ban" (when the action only deletes): ban, clean up, and learn the
 //!   text as spam.
 //!
-//! Only the owner or an admin of the reported chat with the "Ban users" right
-//! may press them: both buttons ban or unban.
+//! Only the owner or an admin of the reported chat may press them: "Not spam"
+//! unbans, so it needs the "Ban users" right; "Ban" also deletes, so it needs
+//! "Delete messages" as well.
 //!
 //! Reports come only from chats that pass `ANTISPAM_ALLOWED_CHATS` (every
 //! chat when it is unset), and each chat gets at most [`REPORTS_PER_WINDOW`]
@@ -29,7 +30,9 @@ use teloxide::types::{
 use telegram_antispam_shield::access::{Access, AdminAction};
 use telegram_antispam_shield::config::Action;
 use telegram_antispam_shield::moderation::Reason;
+use telegram_antispam_shield::shield::ReportKey;
 use telegram_antispam_shield::store::ReportRecord;
+use telegram_antispam_shield::text;
 
 use super::actions::{self, Sender};
 use super::{rights, AppState};
@@ -107,7 +110,7 @@ pub async fn send(bot: &Bot, state: &AppState, incident: Incident<'_>) {
         Spend::Refused => return,
     }
     let text: String = incident.text.chars().take(REPORT_TEXT_CHARS).collect();
-    let id = state.shield().save_report(ReportRecord {
+    let key = state.shield().save_report(ReportRecord {
         chat_id: incident.chat.id.0,
         sender_id: incident.sender.id(),
         text: text.clone(),
@@ -146,12 +149,12 @@ pub async fn send(bot: &Bot, state: &AppState, incident: Incident<'_>) {
 
     let mut row = vec![InlineKeyboardButton::callback(
         "✅ Не спам · Not spam",
-        format!("ham:{id}"),
+        callback_data("ham", key),
     )];
     if action == Action::DeleteOnly {
         row.push(InlineKeyboardButton::callback(
             "🚫 Бан · Ban",
-            format!("ban:{id}"),
+            callback_data("ban", key),
         ));
     }
     let sent = bot
@@ -172,10 +175,11 @@ pub async fn on_callback(
     state: std::sync::Arc<AppState>,
 ) -> ResponseResult<()> {
     let parsed = query.data.as_deref().and_then(parse_callback);
-    let Some((verb, id)) = parsed else {
+    let Some((verb, key)) = parsed else {
         return Ok(());
     };
-    let report = state.shield().report(id);
+    let id = key.id;
+    let report = state.shield().report(key);
     let Some(report) = report else {
         bot.answer_callback_query(query.id)
             .text("Отчёт устарел · Report expired")
@@ -241,9 +245,12 @@ pub async fn on_callback(
     Ok(())
 }
 
-/// `raw` on one line, cut to [`REPORT_NAME_CHARS`].
+/// `raw` on one line without direction overrides, cut to [`REPORT_NAME_CHARS`].
 fn shorten(raw: &str) -> String {
-    let line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let line = text::strip_bidi(raw)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     if line.chars().count() <= REPORT_NAME_CHARS {
         return line;
     }
@@ -251,12 +258,31 @@ fn shorten(raw: &str) -> String {
     format!("{short}…")
 }
 
-/// Every line of `text` behind [`QUOTE_PREFIX`].
-fn quote(text: &str) -> String {
-    text.lines()
-        .map(|line| format!("{QUOTE_PREFIX}{line}"))
+/// Every line of `raw` behind [`QUOTE_PREFIX`]. Lines break at every
+/// character a client may render as a break, not just `\n`, and direction
+/// overrides are dropped, so no line can escape the prefix or reorder the
+/// bot's own lines.
+fn quote(raw: &str) -> String {
+    text::strip_bidi(raw)
+        .split(is_line_break)
+        .map(|line| {
+            let line: String = line.chars().filter(|c| !c.is_control()).collect();
+            format!("{QUOTE_PREFIX}{line}")
+        })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn is_line_break(c: char) -> bool {
+    matches!(
+        c,
+        '\n' | '\r' | '\u{0B}' | '\u{0C}' | '\u{85}' | '\u{2028}' | '\u{2029}'
+    )
+}
+
+/// `verb:<id>:<token>`; at most 4 + 19 + 1 + 16 = 40 bytes of Telegram's 64.
+fn callback_data(verb: &str, key: ReportKey) -> String {
+    format!("{verb}:{}:{:x}", key.id, key.token)
 }
 
 /// Reports quote spam, often with links: never fetch a preview for them.
@@ -276,14 +302,24 @@ enum Verb {
     Ban,
 }
 
-fn parse_callback(data: &str) -> Option<(Verb, i64)> {
-    let (verb, id) = data.split_once(':')?;
-    let verb = match verb {
+/// A button's verb and report. Buttons from before v0.3 carry no token;
+/// they match only reports saved before tokens existed (token 0).
+fn parse_callback(data: &str) -> Option<(Verb, ReportKey)> {
+    let mut parts = data.split(':');
+    let verb = match parts.next()? {
         "ham" => Verb::NotSpam,
         "ban" => Verb::Ban,
         _ => return None,
     };
-    Some((verb, id.parse().ok()?))
+    let id = parts.next()?.parse().ok()?;
+    let token = match parts.next() {
+        Some(hex) => u64::from_str_radix(hex, 16).ok()?,
+        None => 0,
+    };
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((verb, ReportKey { id, token }))
 }
 
 /// Users have positive IDs; channels posting in a group have negative ones.
@@ -340,10 +376,41 @@ mod tests {
 
     #[test]
     fn callback_data_round_trips() {
-        assert_eq!(parse_callback("ham:42"), Some((Verb::NotSpam, 42)));
-        assert_eq!(parse_callback("ban:7"), Some((Verb::Ban, 7)));
+        // Arrange
+        let key = ReportKey {
+            id: 42,
+            token: u64::MAX,
+        };
+        let data = callback_data("ban", key);
+
+        // Act
+        let parsed = parse_callback(&data);
+        let legacy = parse_callback("ham:7");
+
+        // Assert
+        assert!(data.len() <= 64, "{data}");
+        assert_eq!(parsed, Some((Verb::Ban, key)));
+        assert_eq!(legacy, Some((Verb::NotSpam, ReportKey { id: 7, token: 0 })));
         assert_eq!(parse_callback("ham:x"), None);
+        assert_eq!(parse_callback("ham:1:zz"), None);
+        assert_eq!(parse_callback("ham:1:2:3"), None);
         assert_eq!(parse_callback("other:1"), None);
+    }
+
+    #[test]
+    fn no_line_of_foreign_text_escapes_the_quote() {
+        // Arrange: other line breaks and a right-to-left override.
+        let raw = "a\u{2028}fake line\u{2029}b\r\nc\u{85}d \u{202E}tset";
+
+        // Act
+        let quoted = quote(raw);
+
+        // Assert
+        assert!(
+            quoted.lines().all(|l| l.starts_with(QUOTE_PREFIX)),
+            "{quoted}"
+        );
+        assert!(!quoted.contains('\u{202E}'));
     }
 
     #[test]
@@ -393,6 +460,7 @@ mod tests {
     #[test]
     fn names_are_one_short_line() {
         assert_eq!(shorten("Group\nname "), "Group name");
+        assert_eq!(shorten("\u{202E}evil\u{2066}"), "evil");
         let long = shorten(&"я".repeat(200));
         assert_eq!(long.chars().count(), REPORT_NAME_CHARS);
         assert!(long.ends_with('…'));

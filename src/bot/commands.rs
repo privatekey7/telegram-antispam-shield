@@ -8,17 +8,18 @@
 //!
 //! These are explicit admin actions, so they work in dry-run mode too. They
 //! need the "Ban users" right (`/warn` only "Delete messages" when warnings
-//! never ban); anonymous admins are refused (see `access`).
+//! never ban); anonymous admins are refused (see `access`). A reply to an
+//! admin, the bot's owner or a post of the group itself gets a hint instead.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use teloxide::prelude::*;
 
-use telegram_antispam_shield::access::{Access, AdminAction};
+use telegram_antispam_shield::access::{self, Access, AdminAction, Target};
 use telegram_antispam_shield::config::Action;
 
 use super::actions::{self, Sender};
-use super::{rights, AppState};
+use super::{chats, rights, AppState};
 
 /// How long a warning notice stays in the chat.
 const WARNING_NOTICE_TTL: Duration = Duration::from_secs(60);
@@ -30,6 +31,9 @@ const NO_TARGET_HINT: &str = "↩️ Ответьте этой командой 
 удалите их вручную. · Reply to the offending message with this command. Messages \
 from before the group became a supergroup are out of reach: delete them by hand.";
 const BOT_TARGET_HINT: &str = "🤖 Команды не действуют на ботов. · Commands do not apply to bots.";
+const PROTECTED_TARGET_HINT: &str = "🛡 Команды не действуют на админов, владельца бота \
+и посты самой группы. · Commands do not apply to admins, the bot's owner or the group's \
+own posts.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -84,6 +88,18 @@ pub async fn run(bot: &Bot, state: &AppState, msg: &Message, command: Command) {
         actions::send_temporary(bot, chat, BOT_TARGET_HINT.to_owned(), HINT_TTL).await;
         return;
     };
+    let target_kind = target_of(bot, state, target, &sender).await;
+    if !access::may_target(target_kind) {
+        tracing::info!(
+            chat = chat.0,
+            user = sender.id(),
+            target = ?target_kind,
+            command = ?command,
+            "admin_command_target_refused"
+        );
+        actions::send_temporary(bot, chat, PROTECTED_TARGET_HINT.to_owned(), HINT_TTL).await;
+        return;
+    }
     let text = target
         .text()
         .or_else(|| target.caption())
@@ -116,6 +132,22 @@ pub async fn run(bot: &Bot, state: &AppState, msg: &Message, command: Command) {
             }
             warn_notice(bot, state, chat, &sender, count, ban).await;
         }
+    }
+}
+
+/// Who wrote `target`, the message a command replies to. A user missing from
+/// the cached admin list refreshes it at most once a minute, so an admin
+/// promoted a moment ago is still spared.
+async fn target_of(bot: &Bot, state: &AppState, target: &Message, sender: &Sender<'_>) -> Target {
+    match sender {
+        Sender::User(user) if state.settings.is_owner(user.id.0 as i64) => Target::Owner,
+        Sender::User(user) => match chats::cached_rights(bot, state, target.chat.id, user.id).await
+        {
+            Some(_) => Target::Admin,
+            None => Target::Member,
+        },
+        Sender::Channel(_) if chats::is_own_post(bot, state, target).await => Target::OwnPost,
+        Sender::Channel(_) => Target::Channel,
     }
 }
 

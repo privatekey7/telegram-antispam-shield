@@ -96,7 +96,7 @@ pub async fn on_edited_message(bot: Bot, msg: Message, state: Arc<AppState>) -> 
 async fn moderate(bot: &Bot, state: &AppState, msg: &Message, edited: bool) {
     // The group's own posts: anonymous admins, auto-forwards from the linked
     // channel and comments made as that channel.
-    if msg.is_automatic_forward() || is_own_post(bot, state, msg).await {
+    if msg.is_automatic_forward() || chats::is_own_post(bot, state, msg).await {
         return;
     }
     let Some(sender) = actions::sender_of(msg) else {
@@ -277,16 +277,6 @@ async fn chat_allowed(bot: &Bot, state: &AppState, chat: ChatId) -> bool {
         tracing::debug!(chat = chat.0, "ignored_unauthorized_chat");
     }
     false
-}
-
-/// Whether the group itself posted `msg`: as an anonymous admin (the sender
-/// is the group) or as its linked channel.
-async fn is_own_post(bot: &Bot, state: &AppState, msg: &Message) -> bool {
-    match &msg.sender_chat {
-        None => false,
-        Some(sender) if sender.id == msg.chat.id => true,
-        Some(sender) => chats::is_linked_channel(bot, state, msg.chat.id, sender.id).await,
-    }
 }
 
 fn check_flood(

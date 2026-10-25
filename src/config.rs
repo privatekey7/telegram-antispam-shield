@@ -101,8 +101,6 @@ pub struct Settings {
     pub link_limit: usize,
     /// Spam when a message has this many `@mentions`; 0 = off.
     pub mention_limit: usize,
-    /// Combot Anti-Spam lookups of untrusted members.
-    pub cas: CasConfig,
     /// Delete "joined" / "left" service messages.
     pub delete_service_messages: bool,
     /// Cosine similarity at which a message matches a learned sample.
@@ -112,29 +110,6 @@ pub struct Settings {
     /// Chat that receives spam reports with "not spam" buttons; falls back
     /// to a private message to the owner.
     pub report_chat: Option<i64>,
-}
-
-/// Lookups in the Combot Anti-Spam (CAS) database of known spammers.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CasConfig {
-    pub enabled: bool,
-    /// API base URL.
-    pub url: String,
-    /// A slow lookup is treated as "not listed".
-    pub timeout: Duration,
-    /// How long a lookup result is reused.
-    pub cache_ttl: Duration,
-}
-
-impl Default for CasConfig {
-    fn default() -> Self {
-        CasConfig {
-            enabled: true,
-            url: "https://api.cas.chat".to_string(),
-            timeout: Duration::from_secs(5),
-            cache_ttl: Duration::from_secs(60 * 60),
-        }
-    }
 }
 
 impl Default for Settings {
@@ -170,7 +145,6 @@ impl Default for Settings {
             block_forwards: false,
             link_limit: 0,
             mention_limit: 0,
-            cas: CasConfig::default(),
             delete_service_messages: false,
             similarity_threshold: 0.5,
             warn_limit: 3,
@@ -228,18 +202,8 @@ impl Settings {
         if self.owner_id.is_none() {
             warnings.push("ANTISPAM_OWNER_ID is not set: /status shows nothing to anyone.");
         }
-        if self.cas.enabled && !is_https(&self.cas.url) {
-            warnings.push(
-                "ANTISPAM_CAS_URL is not https: lookups can be read and answered by \
-                 anyone on the network path.",
-            );
-        }
         warnings
     }
-}
-
-fn is_https(url: &str) -> bool {
-    url.trim().to_ascii_lowercase().starts_with("https://")
 }
 
 fn env_secs(key: &str, default: Duration) -> Duration {
@@ -339,15 +303,6 @@ impl Settings {
             block_forwards: env_bool("ANTISPAM_BLOCK_FORWARDS", d.block_forwards),
             link_limit: env_number("ANTISPAM_LINK_LIMIT", d.link_limit),
             mention_limit: env_number("ANTISPAM_MENTION_LIMIT", d.mention_limit),
-            cas: CasConfig {
-                enabled: env_bool("ANTISPAM_CAS_ENABLED", d.cas.enabled),
-                url: env::var("ANTISPAM_CAS_URL")
-                    .ok()
-                    .filter(|v| !v.trim().is_empty())
-                    .unwrap_or(d.cas.url),
-                timeout: env_secs("ANTISPAM_CAS_TIMEOUT_SECS", d.cas.timeout),
-                cache_ttl: d.cas.cache_ttl,
-            },
             delete_service_messages: env_bool(
                 "ANTISPAM_DELETE_SERVICE_MESSAGES",
                 d.delete_service_messages,
@@ -622,20 +577,6 @@ mod tests {
         assert_eq!(trust_ttl(Some("0".into())), Some(None), "0 = never lapses");
         assert_eq!(trust_ttl(Some("soon".into())), None);
         assert_eq!(trust_ttl(None), None);
-    }
-
-    #[test]
-    fn plain_http_for_cas_is_warned_about() {
-        let s = Settings {
-            allowed_chats: Some([-1].into_iter().collect()),
-            owner_id: Some(1),
-            cas: CasConfig {
-                url: "http://cas.example".to_string(),
-                ..CasConfig::default()
-            },
-            ..Settings::default()
-        };
-        assert!(s.access_warnings()[0].contains("ANTISPAM_CAS_URL"));
     }
 
     #[test]

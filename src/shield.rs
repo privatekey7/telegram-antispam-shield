@@ -38,9 +38,6 @@ pub struct Incoming<'a> {
     pub sender: i64,
     pub message_id: i32,
     pub facts: MessageFacts<'a>,
-    /// The sender is listed in the Combot Anti-Spam database (looked up by
-    /// the caller for untrusted senders only).
-    pub known_spammer: bool,
     /// An edit of an earlier message: judged like a new one, but it is not
     /// recorded in the history and earns no trust.
     pub edited: bool,
@@ -140,14 +137,12 @@ impl Shield {
         let standing = self.standing(msg.chat, msg.sender, now);
         let vouched = text.is_some_and(|t| self.samples.resembles_ham(msg.chat, t));
 
-        let known_spammer = (msg.known_spammer && !standing.trusted)
-            .then(|| spam(Reason::KnownSpammer, Vec::new()));
         let learned = (!standing.trusted
             && !vouched
             && text.is_some_and(|t| self.samples.resembles_spam(msg.chat, t)))
         .then(|| spam(Reason::LearnedSpam, Vec::new()));
-        let mut decision = known_spammer
-            .or_else(|| self.history_rule(msg.chat, &echoes, standing))
+        let mut decision = self
+            .history_rule(msg.chat, &echoes, standing)
             .or(learned)
             .unwrap_or_else(|| Decision {
                 verdict: classify(&self.model, &self.settings, &msg.facts, standing),
@@ -170,8 +165,7 @@ impl Shield {
         Decision::allow(self.trust.record_clean(msg.chat, msg.sender, chars))
     }
 
-    /// Whether `sender` is trusted in `chat` (trusted members are not looked
-    /// up in external spam databases).
+    /// Whether `sender` is trusted in `chat`.
     pub fn is_trusted(&self, chat: i64, sender: i64) -> bool {
         self.trust.is_trusted(chat, sender)
     }
@@ -340,7 +334,6 @@ mod tests {
             sender,
             message_id,
             facts: MessageFacts::text(text),
-            known_spammer: false,
             edited: false,
         }
     }
@@ -478,27 +471,6 @@ mod tests {
             )),
             Some(Reason::NewcomerLink)
         );
-    }
-
-    #[test]
-    fn known_spammer_is_blocked_unless_trusted() {
-        let mut shield = shield();
-        let now = Instant::now();
-        let listed = Incoming {
-            known_spammer: true,
-            ..msg(7, 1, "Добрый вечер, подскажите по мосту")
-        };
-
-        assert_eq!(
-            reason(&shield.inspect(&listed, now)),
-            Some(Reason::KnownSpammer)
-        );
-        shield.trust.approve(CHAT, 7);
-        let again = Incoming {
-            message_id: 2,
-            ..listed
-        };
-        assert_eq!(shield.inspect(&again, now).verdict, Verdict::Allow);
     }
 
     #[test]

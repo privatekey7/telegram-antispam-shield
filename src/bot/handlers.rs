@@ -43,7 +43,7 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
 
     if let Some(members) = msg.new_chat_members() {
         for member in members.iter().filter(|m| !m.is_bot) {
-            on_join(&bot, &state, msg.chat.id, member).await;
+            on_join(&state, msg.chat.id, member);
         }
         delete_service_message(&bot, &state, &msg).await;
         return Ok(());
@@ -122,12 +122,6 @@ async fn moderate(bot: &Bot, state: &AppState, msg: &Message, edited: bool) {
         }
     }
 
-    // Only untrusted members are looked up in the CAS database.
-    let trusted = state.shield().is_trusted(msg.chat.id.0, sender.id());
-    let known_spammer = match sender {
-        Sender::User(user) if !trusted => state.cas.is_listed(user.id).await,
-        _ => false,
-    };
     let visible = text.unwrap_or_default();
     let links = hidden_links(msg, visible);
     let incoming = Incoming {
@@ -141,7 +135,6 @@ async fn moderate(bot: &Bot, state: &AppState, msg: &Message, edited: bool) {
             has_link: has_link_entity(msg),
             forwarded: is_forwarded(msg),
         },
-        known_spammer,
         edited,
     };
     let (decision, recent) = {
@@ -209,29 +202,16 @@ pub async fn on_chat_member(
         !update.old_chat_member.kind.is_present() && update.new_chat_member.kind.is_present();
     let user = &update.new_chat_member.user;
     if joined && !user.is_bot && chat_allowed(&bot, &state, update.chat.id).await {
-        on_join(&bot, &state, update.chat.id, user).await;
+        on_join(&state, update.chat.id, user);
     }
     Ok(())
 }
 
-/// Remember the join for the newcomer rule and stop known spammers at the
-/// door when the action allows banning or muting.
-async fn on_join(bot: &Bot, state: &AppState, chat: ChatId, user: &User) {
+/// Remember the join for the newcomer rule.
+fn on_join(state: &AppState, chat: ChatId, user: &User) {
     state
         .shield()
         .joined(chat.0, user.id.0 as i64, Instant::now());
-    if state.settings.action == Action::DeleteOnly || !state.cas.is_listed(user.id).await {
-        return;
-    }
-    tracing::info!(
-        chat = chat.0,
-        user = user.id.0,
-        dry_run = state.settings.dry_run,
-        "cas_listed_member_joined"
-    );
-    if !state.settings.dry_run {
-        actions::punish_spammer(bot, state.settings.action, chat, &Sender::User(user)).await;
-    }
 }
 
 /// Delete a "joined" / "left" notice when configured.
@@ -446,7 +426,7 @@ fn status_text(state: &AppState) -> String {
     format!(
         "🛡 Anti-Spam Shield\nthreshold: {threshold:.2} (model from {} chars)\naction: {:?}\n\
          dry_run: {}\njob_offers: {}\nnewcomer_links: {}\ncampaigns: {}\nrepeat_limit: {}\n\
-         bot_mentions: {}\nmixed_script_words: {}\nemoji_limit: {}\nopt_in: {}\ncas: {}\n\
+         bot_mentions: {}\nmixed_script_words: {}\nemoji_limit: {}\nopt_in: {}\n\
          learned_spam: {learned}\nwarn_limit: {}\nreports: {reports}\n\
          trust: {trust_line}\nstorage: {storage}\nexempt_admins: {}\nallowed_chats: {allowed}\n\
          leave_unknown_chats: {}\nflood: {flood_line}",
@@ -461,7 +441,6 @@ fn status_text(state: &AppState) -> String {
         settings.mixed_script_words,
         settings.emoji_limit,
         if opt_in.is_empty() { "none" } else { &opt_in },
-        on_off(settings.cas.enabled),
         settings.warn_limit,
         settings.exempt_admins,
         settings.leave_unknown_chats,

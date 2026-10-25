@@ -12,6 +12,10 @@
 //! * the chat creator has every right, and the bot's owner may do anything;
 //! * anonymous admins (posting as the group) are refused: Telegram does not
 //!   say which admin is behind the message, so their rights are unknown.
+//!
+//! Commands also refuse some targets: admins and the bot's owner (Telegram
+//! would not ban an admin, yet warnings would pile up), and posts of the group
+//! itself (anonymous admins, the linked channel).
 
 /// The rights of one administrator that matter to the bot.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -96,6 +100,29 @@ pub enum Access {
     MissingRight(Privilege),
     /// An anonymous admin, whose rights cannot be checked.
     Anonymous,
+}
+
+/// Who wrote the message an admin command replies to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    /// `ANTISPAM_OWNER_ID`.
+    Owner,
+    /// An admin of the chat, the creator included.
+    Admin,
+    /// The group itself: an anonymous admin or the linked channel.
+    OwnPost,
+    /// A member who is not an admin.
+    Member,
+    /// A channel posting in the group that is not its linked channel.
+    Channel,
+}
+
+/// Whether admin commands may act on a message from `target`.
+pub fn may_target(target: Target) -> bool {
+    match target {
+        Target::Member | Target::Channel => true,
+        Target::Owner | Target::Admin | Target::OwnPost => false,
+    }
 }
 
 /// Whether `caller` may do something that needs `needed`.
@@ -222,5 +249,20 @@ mod tests {
         // Assert
         assert_eq!(anonymous, Access::Anonymous);
         assert_eq!(member, Access::NotAdmin);
+    }
+
+    #[test]
+    fn commands_spare_admins_the_owner_and_the_group() {
+        // Arrange
+        let spared = [Target::Owner, Target::Admin, Target::OwnPost];
+        let punishable = [Target::Member, Target::Channel];
+
+        // Act
+        let spared_allowed: Vec<bool> = spared.into_iter().map(may_target).collect();
+        let punishable_allowed: Vec<bool> = punishable.into_iter().map(may_target).collect();
+
+        // Assert
+        assert_eq!(spared_allowed, [false, false, false]);
+        assert_eq!(punishable_allowed, [true, true]);
     }
 }

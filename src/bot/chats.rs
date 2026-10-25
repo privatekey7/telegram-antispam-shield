@@ -119,6 +119,16 @@ fn cache_ttl(state: &AppState) -> Duration {
     Duration::from_secs(state.settings.admin_cache_ttl_secs)
 }
 
+/// Whether the group itself posted `msg`: as an anonymous admin (the sender
+/// is the group) or as its linked channel.
+pub async fn is_own_post(bot: &Bot, state: &AppState, msg: &Message) -> bool {
+    match &msg.sender_chat {
+        None => false,
+        Some(sender) if sender.id == msg.chat.id => true,
+        Some(sender) => is_linked_channel(bot, state, msg.chat.id, sender.id).await,
+    }
+}
+
 /// Whether `channel` is the channel linked to `chat`.
 pub async fn is_linked_channel(bot: &Bot, state: &AppState, chat: ChatId, channel: ChatId) -> bool {
     let ttl = cache_ttl(state);

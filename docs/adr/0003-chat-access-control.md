@@ -70,6 +70,11 @@ storage. So:
   `/warn` needs the same while `ANTISPAM_WARN_LIMIT` > 0, since any warning may
   be the one that bans, and only `can_delete_messages` when warnings never
   ban. The policy is pure code in `access.rs`, tested without Telegram.
+- **Admins are not targets.** A command that replies to an admin, the
+  owner or a post of the group itself gets a hint and does nothing: Telegram
+  refuses to ban admins, yet `/warn` would count warnings against them.
+  Added after the live test of v0.2.1, where an admin warned themself by
+  replying to the wrong message.
 - **Anonymous admins are refused.** A message sent as the group does not say
   which admin wrote it, so their rights are unknown: an admin who may only pin
   messages would get full powers. They get a hint to turn anonymity off for

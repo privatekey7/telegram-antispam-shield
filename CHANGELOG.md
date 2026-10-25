@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `/spam`, `/ban` and `/warn` sent as a reply to an admin, the bot's owner or
+  a post of the group itself (an anonymous admin, the linked channel) no
+  longer act. Before, `/warn` counted warnings against an admin, and the bans
+  failed in Telegram. The bot now shows a 20-second hint instead.
+
 ## [0.2.1] - 2026-10-25
 
 ### Upgrade notes

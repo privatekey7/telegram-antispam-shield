@@ -211,7 +211,9 @@ buttons, which always show who pressed them.
 The command message itself is deleted. A command that is not a reply, or
 replies to a message out of reach (such as one sent before the group became a
 supergroup), gets a 20-second hint instead; so does a command from an admin
-without the right.
+without the right. Commands never act on admins, the bot's owner or posts of
+the group itself (anonymous admins, the linked channel): a reply to one of
+them also gets a hint.
 
 **Reports.** Set `ANTISPAM_OWNER_ID` (or `ANTISPAM_REPORT_CHAT`) and every
 automatic deletion is reported with the reason, the sender and the text:

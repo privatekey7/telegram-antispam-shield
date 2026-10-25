@@ -157,7 +157,9 @@ ANTISPAM_OWNER_ID=<from.id>
 ```
 
 The allowlist stops strangers from adding the bot to their chats and using
-the user's server. For several groups, separate IDs with commas.
+the user's server. Without it the bot moderates no chat at all (it logs
+`chat_not_allowed` with the ID of each group it sees). For several groups,
+separate IDs with commas.
 
 ## Step 8 — Check the bot's rights
 
@@ -232,7 +234,7 @@ All settings are listed in the README "Configuration" table and in `.env`.
 Any platform that runs a Docker image as an always-on **background worker**
 works. Set:
 
-- **Image:** `ghcr.io/privatekey7/telegram-antispam-shield:0.2`
+- **Image:** `ghcr.io/privatekey7/telegram-antispam-shield:0.3`
 - **Variables:** `BOT_TOKEN`, plus `ANTISPAM_ALLOWED_CHATS` and
   `ANTISPAM_OWNER_ID` (find them with steps 5–8; run those `curl` commands on
   any machine).

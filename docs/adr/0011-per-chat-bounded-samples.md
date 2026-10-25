@@ -63,6 +63,12 @@ audit (2026-10-24, findings H1 and H2) showed two problems with that.
   The next start then trims them to the limits above.
 - We did not add a rate limit on `/spam`: with deduplication and the caps a
   flood of commands only cycles one chat's own samples.
+- **Addendum (2026-10-25).** The audit of v0.2.2 (A5) showed the other side
+  of "the writer pays": foreign chats that fill the 5,000 budget first freeze
+  every other chat at its count, and a new chat keeps one sample. Since 0.3
+  the bot serves only listed chats (ADR 0012), so only the operator's own
+  chats share the budget. With `ANTISPAM_ALLOW_ALL_CHATS=true` the freeze is
+  an accepted risk of serving strangers, documented in the hosting guide.
 
 ## Consequences
 

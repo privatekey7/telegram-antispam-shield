@@ -1,6 +1,7 @@
 # 3. Chat allowlist and owner-restricted status
 
-- Status: accepted
+- Status: accepted; the allowlist default is superseded by
+  [ADR 0012](0012-closed-by-default.md)
 - Date: 2026-06-23
 
 ## Context

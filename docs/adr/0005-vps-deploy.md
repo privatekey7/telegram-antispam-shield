@@ -39,3 +39,10 @@ disk and has already run out of memory on small builders.
 - The `deploy` user is in the `docker` group, which is root-equivalent on the
   host; the forced command is the boundary that keeps the CI key limited.
 - Rollback is a one-liner with the previous SHA.
+
+## Addendum (2026-10-25)
+
+Since 0.3, deploy images are tagged `deploy-<commit>`, so they never
+overwrite the `sha-<commit>` tag of a release image (audit finding A9). CI
+signs them with cosign and passes `deploy-<commit>@sha256:<digest>`, which
+`deploy.sh` validates and pulls by digest.

@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-25
+
 ### Fixed
 - `/spam`, `/ban` and `/warn` sent as a reply to an admin, the bot's owner or
   a post of the group itself (an anonymous admin, the linked channel) no
@@ -253,7 +255,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-stage, non-root Dockerfile and Railway deploy config.
 - GitHub Actions CI: rustfmt, clippy, tests, `cargo audit`, gitleaks.
 
-[Unreleased]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/privatekey7/telegram-antispam-shield/releases/tag/v0.1.0

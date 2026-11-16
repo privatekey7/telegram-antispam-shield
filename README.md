@@ -345,3 +345,8 @@ and [`mshenoda/spam-messages`](https://huggingface.co/datasets/mshenoda/spam-mes
 ## License
 
 [MIT](LICENSE) — free to use, fork, and modify.
+
+## Автор
+
+Канал в Telegram: [@privatekey_ai](https://t.me/privatekey_ai) — Claude Code, ИИ-агенты и новые нейросети на практике.
+Вопросы и предложения — в [чате канала](https://t.me/privatekey_ai_chat).

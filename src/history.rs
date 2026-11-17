@@ -23,6 +23,9 @@ pub const REPEAT_MIN_CHARS: usize = 15;
 /// Shortest normalized text the campaign rule compares, so two newcomers
 /// saying "всем привет" are not a campaign.
 pub const CAMPAIGN_MIN_CHARS: usize = 40;
+/// One join is often seen twice (a service message and a `chat_member`
+/// update); a second sighting within this span is the same join.
+const JOIN_ECHO: Duration = Duration::from_secs(5 * 60);
 /// Messages kept per chat, so a busy chat cannot grow memory without bound.
 const MAX_MESSAGES_PER_CHAT: usize = 5000;
 
@@ -35,10 +38,17 @@ struct Entry {
     fingerprint: Option<(u64, usize)>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Join {
+    at: Instant,
+    /// The member's profile was judged an ad on this join.
+    profile_ad: bool,
+}
+
 #[derive(Debug, Default)]
 struct ChatLog {
     messages: VecDeque<Entry>,
-    joins: HashMap<i64, Instant>,
+    joins: HashMap<i64, Join>,
 }
 
 /// Earlier messages with the same text as the one just recorded.
@@ -114,9 +124,43 @@ impl History {
         find_echoes(earlier, sender, fingerprint(text))
     }
 
-    /// Remember that `user` joined `chat`.
-    pub fn joined(&mut self, chat: i64, user: i64, now: Instant) {
-        self.chats.entry(chat).or_default().joins.insert(user, now);
+    /// Remember that `user` joined `chat`. Returns `false` when this is a
+    /// second sighting of a join seen within [`JOIN_ECHO`].
+    pub fn joined(&mut self, chat: i64, user: i64, now: Instant) -> bool {
+        let joins = &mut self.chats.entry(chat).or_default().joins;
+        if joins
+            .get(&user)
+            .is_some_and(|j| now.duration_since(j.at) < JOIN_ECHO)
+        {
+            return false;
+        }
+        joins.insert(
+            user,
+            Join {
+                at: now,
+                profile_ad: false,
+            },
+        );
+        true
+    }
+
+    /// Mark `user`'s latest join in `chat` as made with an ad in the profile.
+    pub fn mark_profile_ad(&mut self, chat: i64, user: i64) {
+        if let Some(join) = self
+            .chats
+            .get_mut(&chat)
+            .and_then(|log| log.joins.get_mut(&user))
+        {
+            join.profile_ad = true;
+        }
+    }
+
+    /// Whether `user`'s latest join in `chat` was made with an ad in the profile.
+    pub fn joined_with_profile_ad(&self, chat: i64, user: i64) -> bool {
+        self.chats
+            .get(&chat)
+            .and_then(|log| log.joins.get(&user))
+            .is_some_and(|j| j.profile_ad)
     }
 
     /// Whether `sender` joined `chat` within `within` (and the bot saw it).
@@ -124,7 +168,7 @@ impl History {
         self.chats
             .get(&chat)
             .and_then(|log| log.joins.get(&sender))
-            .is_some_and(|at| now.duration_since(*at) < within)
+            .is_some_and(|j| now.duration_since(j.at) < within)
     }
 
     /// IDs of `sender`'s messages still in the history.
@@ -143,7 +187,7 @@ impl History {
         let window = self.window;
         self.chats.retain(|_, log| {
             prune(&mut log.messages, window, now);
-            log.joins.retain(|_, at| now.duration_since(*at) < window);
+            log.joins.retain(|_, j| now.duration_since(j.at) < window);
             !log.messages.is_empty() || !log.joins.is_empty()
         });
     }
@@ -272,6 +316,22 @@ mod tests {
         assert!(history.joined_within(CHAT, 7, DAY, start + mins(60)));
         assert!(!history.joined_within(CHAT, 7, mins(30), start + mins(60)));
         assert!(!history.joined_within(CHAT, 8, DAY, start));
+    }
+
+    #[test]
+    fn a_join_seen_twice_counts_once() {
+        let mut history = History::new(DAY);
+        let start = Instant::now();
+
+        assert!(history.joined(CHAT, 7, start));
+        history.mark_profile_ad(CHAT, 7);
+        assert!(!history.joined(CHAT, 7, start + mins(1)));
+        assert!(history.joined_with_profile_ad(CHAT, 7));
+
+        // A later rejoin is a new join with a fresh judgement.
+        assert!(history.joined(CHAT, 7, start + mins(30)));
+        assert!(!history.joined_with_profile_ad(CHAT, 7));
+        assert!(!history.joined_with_profile_ad(CHAT, 8));
     }
 
     #[test]

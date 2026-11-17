@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-17
+
+### Added
+- Profile-ad rule (`ANTISPAM_BLOCK_PROFILE_ADS`, on by default). A newcomer
+  whose name or `@username` advertises adult content ("🔞 раздеватор по
+  фото", "nudes", "эскорт") or a link, or whose bio advertises adult content
+  or a `t.me/+` invite, gets the configured action and a report as soon as
+  they join, and their "joined" notice is deleted even when
+  `ANTISPAM_DELETE_SERVICE_MESSAGES` is off. Such accounts often never
+  write: the notice itself was the ad. The bio is read (one `getChat` call)
+  only when the name passes. The name is also checked on every message from
+  an untrusted sender, so renaming into an ad after joining does not help.
+  None of the 393 member names in the reference chat export trips it.
+- `/status` shows `profile_ads`.
+
 ## [0.3.1] - 2026-10-25
 
 ### Removed
@@ -331,7 +346,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-stage, non-root Dockerfile and Railway deploy config.
 - GitHub Actions CI: rustfmt, clippy, tests, `cargo audit`, gitleaks.
 
-[Unreleased]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.2.1...v0.2.2

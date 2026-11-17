@@ -234,7 +234,7 @@ All settings are listed in the README "Configuration" table and in `.env`.
 Any platform that runs a Docker image as an always-on **background worker**
 works. Set:
 
-- **Image:** `ghcr.io/privatekey7/telegram-antispam-shield:0.3`
+- **Image:** `ghcr.io/privatekey7/telegram-antispam-shield:0.4`
 - **Variables:** `BOT_TOKEN`, plus `ANTISPAM_ALLOWED_CHATS` and
   `ANTISPAM_OWNER_ID` (find them with steps 5–8; run those `curl` commands on
   any machine).

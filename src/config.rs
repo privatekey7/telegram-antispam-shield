@@ -46,6 +46,9 @@ pub struct Settings {
     pub block_invite_links: bool,
     /// Treat job and income offers with pay or "DM me" as spam.
     pub block_job_offers: bool,
+    /// Treat ads in a member's name or bio as spam, checked on join and on
+    /// every message (see [`crate::heuristics::is_profile_ad`]).
+    pub block_profile_ads: bool,
     /// Treat invisible characters inside words (`act\u{200B}ive`) as spam.
     pub block_hidden_characters: bool,
     /// Treat inline buttons on a person's message as spam (only automation,
@@ -121,6 +124,7 @@ impl Default for Settings {
             threshold: None,
             block_invite_links: true,
             block_job_offers: true,
+            block_profile_ads: true,
             block_hidden_characters: true,
             block_inline_keyboards: true,
             exempt_admins: true,
@@ -256,6 +260,7 @@ impl Settings {
                 .filter(|t| (0.0..=1.0).contains(t)),
             block_invite_links: env_bool("ANTISPAM_BLOCK_INVITE_LINKS", d.block_invite_links),
             block_job_offers: env_bool("ANTISPAM_BLOCK_JOB_OFFERS", d.block_job_offers),
+            block_profile_ads: env_bool("ANTISPAM_BLOCK_PROFILE_ADS", d.block_profile_ads),
             block_hidden_characters: env_bool(
                 "ANTISPAM_BLOCK_HIDDEN_CHARACTERS",
                 d.block_hidden_characters,

@@ -6,12 +6,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use teloxide::prelude::*;
-use teloxide::types::{ChatMemberUpdated, MessageEntityKind, MessageKind, User};
+use teloxide::types::{Chat, ChatMemberUpdated, MessageEntityKind, MessageId, MessageKind, User};
 
 use telegram_antispam_shield::access::Access;
 use telegram_antispam_shield::config::Action;
 use telegram_antispam_shield::flood::{FloodVerdict, IncomingMessage};
-use telegram_antispam_shield::moderation::{MessageFacts, Verdict};
+use telegram_antispam_shield::moderation::{MessageFacts, Reason, Verdict};
 use telegram_antispam_shield::shield::Incoming;
 
 use super::actions::{self, FloodAction, Sender};
@@ -43,7 +43,7 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
 
     if let Some(members) = msg.new_chat_members() {
         for member in members.iter().filter(|m| !m.is_bot) {
-            on_join(&state, msg.chat.id, member);
+            on_join(&bot, &state, &msg.chat, member, Some(msg.id)).await;
         }
         delete_service_message(&bot, &state, &msg).await;
         return Ok(());
@@ -124,6 +124,7 @@ async fn moderate(bot: &Bot, state: &AppState, msg: &Message, edited: bool) {
 
     let visible = text.unwrap_or_default();
     let links = hidden_links(msg, visible);
+    let sender_name = sender.profile_name();
     let incoming = Incoming {
         chat: msg.chat.id.0,
         sender: sender.id(),
@@ -134,6 +135,7 @@ async fn moderate(bot: &Bot, state: &AppState, msg: &Message, edited: bool) {
             inline_keyboard: has_inline_keyboard(msg),
             has_link: has_link_entity(msg),
             forwarded: is_forwarded(msg),
+            sender_name: &sender_name,
         },
         edited,
     };
@@ -202,16 +204,89 @@ pub async fn on_chat_member(
         !update.old_chat_member.kind.is_present() && update.new_chat_member.kind.is_present();
     let user = &update.new_chat_member.user;
     if joined && !user.is_bot && chat_allowed(&bot, &state, update.chat.id).await {
-        on_join(&state, update.chat.id, user);
+        on_join(&bot, &state, &update.chat, user, None).await;
     }
     Ok(())
 }
 
-/// Remember the join for the newcomer rule.
-fn on_join(state: &AppState, chat: ChatId, user: &User) {
+/// Remember the join for the newcomer rule and, the first time the join is
+/// seen, judge the newcomer's profile: an ad in the name or bio gets the
+/// configured action and a report without waiting for a message. The
+/// "joined" `notice` of such a member is deleted, whichever sighting
+/// judged it, because the notice itself shows the ad to the whole chat.
+async fn on_join(bot: &Bot, state: &AppState, chat: &Chat, user: &User, notice: Option<MessageId>) {
+    let (chat_id, user_id) = (chat.id.0, user.id.0 as i64);
+    let first = state.shield().joined(chat_id, user_id, Instant::now());
+    let reason = if first {
+        judge_profile(bot, state, chat_id, user).await
+    } else {
+        None
+    };
+    let ad = reason.is_some() || state.shield().joined_with_profile_ad(chat_id, user_id);
+    if !ad || state.settings.dry_run {
+        if let Some(reason) = reason {
+            log_profile_ad(state, chat_id, user_id, reason);
+        }
+        return;
+    }
+    if let Some(id) = notice {
+        actions::delete_all(bot, chat.id, [id.0]).await;
+    }
+    let Some(reason) = reason else {
+        return; // judged and punished on the other sighting
+    };
+    log_profile_ad(state, chat_id, user_id, reason);
+    let sender = Sender::User(user);
+    actions::punish_spammer(bot, state.settings.action, chat.id, &sender).await;
+    let profile = sender.profile_name();
+    let incident = Incident {
+        chat,
+        sender: &sender,
+        text: &profile,
+        reason,
+        score: 1.0,
+        deleted: usize::from(notice.is_some()),
+        edited: false,
+    };
+    reports::send(bot, state, incident).await;
+}
+
+/// The profile rule on a newcomer: the name first, then the bio, which
+/// costs a request and is read only when the name passes.
+async fn judge_profile(bot: &Bot, state: &AppState, chat: i64, user: &User) -> Option<Reason> {
+    if !state.settings.block_profile_ads {
+        return None;
+    }
+    let (user_id, name) = (user.id.0 as i64, Sender::User(user).profile_name());
+    if let Some(reason) = state.shield().judge_profile(chat, user_id, &name, None) {
+        return Some(reason);
+    }
+    if state.shield().is_trusted(chat, user_id) {
+        return None;
+    }
+    let bio = match bot.get_chat(user.id).await {
+        Ok(full) => full.bio().map(str::to_owned),
+        Err(e) => {
+            tracing::debug!(error = %e, user = user_id, "bio_unavailable");
+            None
+        }
+    };
+    let bio = bio?;
     state
         .shield()
-        .joined(chat.0, user.id.0 as i64, Instant::now());
+        .judge_profile(chat, user_id, &name, Some(&bio))
+}
+
+fn log_profile_ad(state: &AppState, chat: i64, user: i64, reason: Reason) {
+    tracing::info!(
+        chat,
+        user,
+        score = 1.0,
+        reason = reason.as_str(),
+        on_join = true,
+        dry_run = state.settings.dry_run,
+        "spam_detected"
+    );
 }
 
 /// Delete a "joined" / "left" notice when configured.
@@ -425,7 +500,7 @@ fn status_text(state: &AppState) -> String {
     .join(", ");
     format!(
         "🛡 Anti-Spam Shield\nthreshold: {threshold:.2} (model from {} chars)\naction: {:?}\n\
-         dry_run: {}\njob_offers: {}\nnewcomer_links: {}\ncampaigns: {}\nrepeat_limit: {}\n\
+         dry_run: {}\njob_offers: {}\nprofile_ads: {}\nnewcomer_links: {}\ncampaigns: {}\nrepeat_limit: {}\n\
          bot_mentions: {}\nmixed_script_words: {}\nemoji_limit: {}\nopt_in: {}\n\
          learned_spam: {learned}\nwarn_limit: {}\nreports: {reports}\n\
          trust: {trust_line}\nstorage: {storage}\nexempt_admins: {}\nallowed_chats: {allowed}\n\
@@ -434,6 +509,7 @@ fn status_text(state: &AppState) -> String {
         settings.action,
         settings.dry_run,
         on_off(settings.block_job_offers),
+        on_off(settings.block_profile_ads),
         on_off(settings.block_newcomer_links),
         on_off(settings.block_campaigns),
         settings.repeat_limit,

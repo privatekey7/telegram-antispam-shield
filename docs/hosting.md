@@ -13,7 +13,7 @@ The bot runs anywhere that has outbound HTTPS to `api.telegram.org`:
 
 Prebuilt images for `linux/amd64` and `linux/arm64` are published at
 `ghcr.io/privatekey7/telegram-antispam-shield` on every release. Tags:
-`0.3.0` (exact), `0.3` (latest patch of 0.3 — recommended), `sha-<commit>`.
+`0.4.0` (exact), `0.4` (latest patch of 0.4 — recommended), `sha-<commit>`.
 There is no `latest` tag on purpose.
 
 Before you start, create the bot and get its token (README, Step 1).
@@ -57,7 +57,7 @@ package manager.
 | Change settings | edit `.env`, then `docker compose up -d` |
 | Update (patch releases) | `docker compose pull && docker compose up -d` |
 | Upgrade to a new minor/major | download the new `compose.yaml` (same command as above), read the [CHANGELOG](../CHANGELOG.md), then `docker compose up -d` |
-| Pin an exact version | add `IMAGE_TAG=0.3.0` to `.env` |
+| Pin an exact version | add `IMAGE_TAG=0.4.0` to `.env` |
 | Stop | `docker compose down` |
 
 ## Plain `docker run`
@@ -70,7 +70,7 @@ docker run -d --name antispam-shield --restart unless-stopped \
   -v antispam-data:/data \
   --security-opt no-new-privileges:true --memory 128m --cpus 0.5 \
   --pids-limit 128 --log-opt max-size=10m --log-opt max-file=3 \
-  ghcr.io/privatekey7/telegram-antispam-shield:0.3
+  ghcr.io/privatekey7/telegram-antispam-shield:0.4
 ```
 
 `--tmpfs /tmp` is needed for the health check (see [Health](#health)); keep
@@ -82,7 +82,7 @@ starts the bot from scratch.
 Railway, Render, Fly.io, Koyeb, Northflank, a Kubernetes cluster — anything
 that runs a Docker image as an always-on background worker:
 
-- **Image:** `ghcr.io/privatekey7/telegram-antispam-shield:0.3`
+- **Image:** `ghcr.io/privatekey7/telegram-antispam-shield:0.4`
 - **Variables:** `BOT_TOKEN`, `ANTISPAM_ALLOWED_CHATS` and any other
   `ANTISPAM_*` settings from the README.
 - **Service type:** worker / background — no public port, no HTTP health
@@ -105,7 +105,7 @@ Needs Rust ≥ 1.88 ([rustup](https://rustup.rs)) and about 2 GB of free RAM and
 disk for the build. The model is built into the binary.
 
 ```bash
-cargo install --locked --tag v0.3.0 \
+cargo install --locked --tag v0.4.0 \
   --git https://github.com/privatekey7/telegram-antispam-shield
 ```
 

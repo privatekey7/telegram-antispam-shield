@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   None of the 393 member names in the reference chat export trips it.
 - `/status` shows `profile_ads`.
 
+### Security
+- `rusqlite` 0.41.1 with `libsqlite3-sys` 0.39.1, which bundles a SQLite
+  fixed for CVE-2026-119375 (RUSTSEC-2026-0459). The minimum Rust version
+  rises to 1.89 because of it. The Docker image already builds with 1.99.
+
 ## [0.3.1] - 2026-10-25
 
 ### Removed

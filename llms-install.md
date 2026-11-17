@@ -251,7 +251,7 @@ always-on workers.
 
 ## From source (no Docker)
 
-Needs Rust ≥ 1.88 (`rustup`) and ~2 GB of free RAM/disk for the build.
+Needs Rust ≥ 1.89 (`rustup`) and ~2 GB of free RAM/disk for the build.
 
 ```bash
 cargo install --locked --git https://github.com/privatekey7/telegram-antispam-shield \

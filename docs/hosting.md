@@ -101,7 +101,7 @@ Check current pricing: many platforms no longer offer a free always-on tier.
 
 ## From source (without Docker)
 
-Needs Rust ≥ 1.88 ([rustup](https://rustup.rs)) and about 2 GB of free RAM and
+Needs Rust ≥ 1.89 ([rustup](https://rustup.rs)) and about 2 GB of free RAM and
 disk for the build. The model is built into the binary.
 
 ```bash

@@ -2,7 +2,7 @@
 name = "telegram-antispam-shield"
 version = "0.4.0"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.89"
 description = "Lightweight Telegram anti-spam bot (RU/EN) with a small embedded ML model."
 license = "MIT"
 repository = "https://github.com/privatekey7/telegram-antispam-shield"
@@ -27,7 +27,7 @@ dotenvy = "0.15"
 serde = { version = "1", features = ["derive"] }
 # Already pulled in by teloxide; needed for mute end times (`until_date`).
 chrono = { version = "0.4", default-features = false }
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 # Already pulled in by teloxide; the poller reads raw updates (src/bot/polling.rs).
 futures = { version = "0.3", default-features = false, features = ["std"] }
 serde_json = "1.0.154"

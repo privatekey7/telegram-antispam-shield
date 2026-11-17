@@ -22,6 +22,9 @@ pub struct MessageFacts<'a> {
     pub has_link: bool,
     /// Forwarded, or quoting a message from another chat.
     pub forwarded: bool,
+    /// The sender's full name and `@username`, or a channel's title: a
+    /// member can rename themselves into an ad after joining.
+    pub sender_name: &'a str,
 }
 
 /// What the bot knows about the sender in this chat.
@@ -68,6 +71,8 @@ pub enum Reason {
     TooManyMentions,
     Forwarded,
     JobOffer,
+    /// An ad in the sender's name or bio (adult content, links, invites).
+    ProfileAd,
     Model,
 }
 
@@ -106,6 +111,7 @@ impl Reason {
             Reason::TooManyMentions => "too_many_mentions",
             Reason::Forwarded => "forwarded",
             Reason::JobOffer => "job_offer",
+            Reason::ProfileAd => "profile_ad",
             Reason::Model => "ml_model",
         }
     }
@@ -151,6 +157,9 @@ pub fn classify(
     if standing.trusted {
         return Verdict::Allow;
     }
+    if settings.block_profile_ads && heuristics::is_profile_ad(facts.sender_name) {
+        return rule(Reason::ProfileAd);
+    }
     if settings.block_forwards && facts.forwarded {
         return rule(Reason::Forwarded);
     }
@@ -181,6 +190,14 @@ pub fn classify(
     } else {
         Verdict::Allow
     }
+}
+
+/// Whether a new member's profile is an ad: the name (with `@username`) or
+/// the bio, when the bot could read it. Trusted members are not judged by
+/// their profile (see [`classify`]); the caller skips them.
+pub fn is_profile_spam(settings: &Settings, name: &str, bio: Option<&str>) -> bool {
+    settings.block_profile_ads
+        && (heuristics::is_profile_ad(name) || bio.is_some_and(heuristics::is_bio_ad))
 }
 
 /// Opt-in word lists and the shape checks of [`meta`], in order of precision.
@@ -289,6 +306,49 @@ mod tests {
             Standing::default(),
         );
         assert_ne!(reason_of(verdict), Some(Reason::JobOffer));
+    }
+
+    #[test]
+    fn an_ad_in_the_senders_name_is_spam() {
+        let facts = MessageFacts {
+            text: "Всем привет",
+            sender_name: "🔞 раздеватор по фото 🍌",
+            ..MessageFacts::default()
+        };
+        assert_eq!(reason_of(check(&facts)), Some(Reason::ProfileAd));
+    }
+
+    #[test]
+    fn a_trusted_sender_is_not_judged_by_name() {
+        let model = Model::load_default().unwrap();
+        let facts = MessageFacts {
+            text: "Всем привет",
+            sender_name: "Sexy Anna",
+            ..MessageFacts::default()
+        };
+        let standing = Standing {
+            trusted: true,
+            newcomer: false,
+        };
+        assert_eq!(
+            classify(&model, &Settings::default(), &facts, standing),
+            Verdict::Allow
+        );
+    }
+
+    #[test]
+    fn profile_rule_can_be_disabled() {
+        let settings = Settings {
+            block_profile_ads: false,
+            ..Settings::default()
+        };
+        assert!(!is_profile_spam(&settings, "🔞 nudes", Some("интим")));
+        assert!(is_profile_spam(
+            &Settings::default(),
+            "Anna",
+            Some("интим 18+")
+        ));
+        assert!(!is_profile_spam(&Settings::default(), "Anna", None));
     }
 
     #[test]

@@ -14,7 +14,7 @@
 
 Готовые образы для `linux/amd64` и `linux/arm64` публикуются в
 `ghcr.io/privatekey7/telegram-antispam-shield` при каждом релизе. Теги:
-`0.3.0` (точная версия), `0.3` (последний патч ветки 0.3, рекомендуем),
+`0.4.0` (точная версия), `0.4` (последний патч ветки 0.4, рекомендуем),
 `sha-<коммит>`. Тега `latest` нет специально.
 
 Сначала создайте бота и получите токен (README, шаг 1).
@@ -59,7 +59,7 @@ shell, ни пакетного менеджера.
 | Поменять настройки | отредактируйте `.env`, затем `docker compose up -d` |
 | Обновиться (патчи) | `docker compose pull && docker compose up -d` |
 | Перейти на новую минорную или мажорную версию | скачайте новый `compose.yaml` (та же команда, что выше), прочитайте [CHANGELOG](../CHANGELOG.md), затем `docker compose up -d` |
-| Закрепить точную версию | добавьте `IMAGE_TAG=0.3.0` в `.env` |
+| Закрепить точную версию | добавьте `IMAGE_TAG=0.4.0` в `.env` |
 | Остановить | `docker compose down` |
 
 ## Просто `docker run`
@@ -72,7 +72,7 @@ docker run -d --name antispam-shield --restart unless-stopped \
   -v antispam-data:/data \
   --security-opt no-new-privileges:true --memory 128m --cpus 0.5 \
   --pids-limit 128 --log-opt max-size=10m --log-opt max-file=3 \
-  ghcr.io/privatekey7/telegram-antispam-shield:0.3
+  ghcr.io/privatekey7/telegram-antispam-shield:0.4
 ```
 
 `--tmpfs /tmp` нужен для проверки здоровья (см. [Проверка здоровья](#проверка-здоровья)).
@@ -84,7 +84,7 @@ docker run -d --name antispam-shield --restart unless-stopped \
 Railway, Render, Fly.io, Koyeb, Northflank, кластер Kubernetes — подойдёт всё,
 что запускает Docker-образ как постоянный фоновый процесс:
 
-- **Образ:** `ghcr.io/privatekey7/telegram-antispam-shield:0.3`
+- **Образ:** `ghcr.io/privatekey7/telegram-antispam-shield:0.4`
 - **Переменные:** `BOT_TOKEN`, `ANTISPAM_ALLOWED_CHATS` и другие нужные
   `ANTISPAM_*` из README.
 - **Тип сервиса:** worker / background — без публичного порта и HTTP
@@ -104,11 +104,11 @@ repo**, затем добавьте `BOT_TOKEN` во **Variables**. Файл `ra
 
 ## Из исходников (без Docker)
 
-Нужен Rust 1.88 или новее ([rustup](https://rustup.rs)) и около 2 ГБ
+Нужен Rust 1.89 или новее ([rustup](https://rustup.rs)) и около 2 ГБ
 свободной памяти и диска для сборки. Модель встроена в бинарник.
 
 ```bash
-cargo install --locked --tag v0.3.0 \
+cargo install --locked --tag v0.4.0 \
   --git https://github.com/privatekey7/telegram-antispam-shield
 ```
 

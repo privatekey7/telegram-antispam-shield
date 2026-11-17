@@ -20,6 +20,10 @@ machine with Docker — a server, a Raspberry Pi, a NAS or a container platform.
   deletes the whole burst and mutes them (10 min → 1 h → 1 day for repeat offences).
 - 💼 **Job offers are spam:** "remote work, 300$ a day, DM me" is removed by
   default — real chats don't recruit in the open.
+- 🔞 **Ads in profiles:** a newcomer whose name advertises adult content or a
+  link, or whose bio does, is removed on joining, before they write anything,
+  and their "joined" notice goes too. Members who rename themselves into an
+  ad later are caught on their next message.
 - 🕵️ **Sees through tricks:** invisible characters inside words, links hidden
   under text, inline buttons that only automation can attach, and spam posted
   on behalf of a channel.
@@ -153,6 +157,7 @@ All settings are **environment variables**: put them in `.env` next to
 | `ANTISPAM_BLOCK_HIDDEN_CHARACTERS` | `true` | Treat invisible characters inside words (`act​ive`) as spam. People don't type them; filter dodgers do. |
 | `ANTISPAM_BLOCK_INLINE_KEYBOARDS` | `true` | Treat inline buttons on a member's message as spam. A person can't attach buttons; only automation such as a business bot can (messages sent via inline bots are not affected). |
 | `ANTISPAM_BLOCK_JOB_OFFERS` | `true` | Treat job and income offers (remote work, side income, "earn $X a day") as spam when they mention pay or ask to DM. Talking about work is fine. |
+| `ANTISPAM_BLOCK_PROFILE_ADS` | `true` | Treat a member whose name or `@username` advertises adult content ("🔞", "nudes", "эскорт") or a link, or whose bio advertises adult content or a `t.me/+` invite, as a spammer: on joining (the action applies and the "joined" notice is deleted) and on every message until they are trusted. Ordinary links in a bio are fine. |
 | `ANTISPAM_TRUST_AFTER` | `3` | Clean messages after which a member is trusted: the model, job-offer and newcomer-link checks stop for them (buttons, hidden characters, invite links and repeats still apply). `0` checks everyone. |
 | `ANTISPAM_TRUST_MIN_CHARS` | `10` | Shorter messages ("+", "hi") don't count toward trust. |
 | `ANTISPAM_TRUST_TTL_DAYS` | `90` | Trust lapses after this many days without a clean message; the member then earns it again. Keeps a dormant or sold account from spending old trust. `0` = never lapses. |
@@ -260,7 +265,8 @@ Incoming message
    ├─ 2. Rules       → buttons, hidden characters, invite links   → spam
    │     (trusted members stop here)
    ├─ 3. Rules       → newcomer links, stop words, scripts, @bot, mixed alphabets,
-   │                   emoji, forwards, link/mention limits, job offers → spam
+   │                   emoji, forwards, link/mention limits, job offers,
+   │                   an ad in the sender's name                     → spam
    │
    ├─ 4. ML model    → 20+ chars or a link: spam probability ≥ threshold? → spam
    │

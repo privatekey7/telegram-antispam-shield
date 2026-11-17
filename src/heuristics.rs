@@ -1,11 +1,14 @@
 //! Fast, high-precision rules that run before the ML model.
 //!
 //! Heuristics must have a very low false-positive rate: anything ambiguous is
-//! left to the model. Two rules exist today:
+//! left to the model. Three rules exist today:
 //!
 //! * Telegram invite links, a near-universal spam signal in public groups.
 //! * Job and income offers ("remote work, 300$ a day, DM me"). Real community
 //!   chats do not recruit in the open; such offers go to private messages.
+//! * Ads in a member's profile: adult content or links in the name, adult
+//!   content or invites in the bio. Such accounts often never write: their
+//!   "joined the group" notice is the ad.
 
 use regex::Regex;
 use std::sync::LazyLock;
@@ -87,6 +90,46 @@ static CONTACT: LazyLock<Regex> = LazyLock::new(|| {
     .expect("contact regex is valid")
 });
 
+/// Adult-content advertising, the usual payload of a spammer's name or bio
+/// ("🔞 раздеватор по фото", "nudes", "эскорт"). Real members of a tech or
+/// community chat do not put these words in their profile.
+static ADULT_AD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?ix)
+        🔞
+      | \b18\s*\+
+      | порн | porn
+      | нюд[сз] | \bnudes?\b | nudify | undress
+      | раздева | раздеть | раздену
+      | интим
+      | эскорт | \bescort
+      | only\s*fans
+      | \bxxx\b
+      | \bsex | секс
+      | шлюх | проститу
+      | вебкам | \bwebcam
+      | хентай | hentai
+      | \bnsfw\b
+        ",
+    )
+    .expect("adult-ad regex is valid")
+});
+
+/// Whether a member's name (and `@username`) advertises: adult content, a
+/// link or an invite. Seen before the member writes anything, so the rule
+/// sticks to wording a real name never has.
+pub fn is_profile_ad(name: &str) -> bool {
+    let name = crate::text::strip_invisible(name);
+    ADULT_AD.is_match(&name) || contains_link(&name) || is_invite_link(&name)
+}
+
+/// Whether a member's bio advertises: adult content or a private-group
+/// invite. Ordinary links stay allowed: people link their channel or site.
+pub fn is_bio_ad(bio: &str) -> bool {
+    let bio = crate::text::strip_invisible(bio);
+    ADULT_AD.is_match(&bio) || is_invite_link(&bio)
+}
+
 /// Whether `text` contains a Telegram private-group invite link.
 pub fn is_invite_link(text: &str) -> bool {
     INVITE_LINK.is_match(text)
@@ -147,6 +190,56 @@ mod tests {
         for text in offers {
             assert!(is_job_offer(text), "should flag: {text}");
         }
+    }
+
+    #[test]
+    fn flags_adult_ads_in_names() {
+        let names = [
+            "🔞 раздеватор по фото 🍌 NEWTONCONFIRMATION",
+            "Раздену любую девушку по фото",
+            "Нюдсы бесплатно",
+            "Free nudes here",
+            "Sexy Anna",
+            "Интим досуг 24/7",
+            "Эскорт Москва",
+            "OnlyFans leaks",
+            "Марина 18+",
+            "Porn",
+            "Каналы t.me/freestuff",
+            "Мой чат https://example.com",
+            "Join t.me/+AbCdEf",
+            "Ин\u{200B}тим",
+        ];
+        for name in names {
+            assert!(is_profile_ad(name), "should flag: {name}");
+        }
+    }
+
+    #[test]
+    fn allows_ordinary_names() {
+        let names = [
+            "Artur",
+            "AAA",
+            "PrivateKey",
+            "Дмитрий Секретарёв",
+            "Сергей | Python dev",
+            "Essex Dev",
+            "Alex 2018",
+            "Мария @masha_dev",
+            "Nikita (ex-Yandex)",
+            "Иван 🐍",
+        ];
+        for name in names {
+            assert!(!is_profile_ad(name), "should allow: {name}");
+        }
+    }
+
+    #[test]
+    fn flags_adult_and_invite_bios_but_not_plain_links() {
+        assert!(is_bio_ad("💋 Интим фото у меня в канале"));
+        assert!(is_bio_ad("Заходи t.me/+AbCdEf"));
+        assert!(!is_bio_ad("Backend dev, мой канал t.me/mychannel"));
+        assert!(!is_bio_ad("💕 https://telegra.ph/-11-14-3145"));
     }
 
     #[test]

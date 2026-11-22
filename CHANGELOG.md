@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Styled letters no longer hide spam from the rules. Mathematical
+  bold/italic/script (`𝐫𝐞𝐦𝐨𝐭𝐞 𝐰𝐨𝐫𝐤`), fullwidth (`ｔ.ｍｅ/+…`), circled
+  (`Ⓢⓔⓧⓨ`) and letterlike look-alikes are folded to plain letters (NFKC)
+  before the invite, job-offer, profile-ad and learned-sample checks, the
+  model and the repeat fingerprints. Ordinary text, `№` included, reaches the
+  model unchanged. Hangul fillers and invisible operators now count as
+  invisible characters.
+- The invite-link rule also catches `telegram.me/+…`, `telegram.dog/+…`,
+  `tg://join?invite=…` and copies with a space around the dot or slash
+  (`t. me/+…`). Trusted members face this rule too, so these used to slip
+  through for them.
+- The emoji-wall check counts ⭐ ⬇️ ⏰ ▶️ 🆓 🅰 🀄 keycaps (1️⃣) and flags (one
+  per flag), which it used to miss.
+
 ## [0.4.0] - 2026-11-17
 
 ### Added

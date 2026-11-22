@@ -31,6 +31,8 @@ rusqlite = { version = "0.41.1", features = ["bundled"] }
 # Already pulled in by teloxide; the poller reads raw updates (src/bot/polling.rs).
 futures = { version = "0.3", default-features = false, features = ["std"] }
 serde_json = "1.0.154"
+# NFKC folds styled look-alike letters (𝐛𝐨𝐥𝐝, ｆｕｌｌｗｉｄｔｈ, Ⓒⓘⓡⓒⓛⓔⓓ) before the rules.
+unicode-normalization = "0.1.26"
 
 [profile.release]
 # Keep the release build lightweight and reliable on small CI/PaaS builders

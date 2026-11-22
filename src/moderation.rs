@@ -130,7 +130,8 @@ pub enum Verdict {
 ///
 /// Heuristics run first (fast, high precision). If none fire, the ML model
 /// decides using the effective threshold. Rules and model see the text
-/// without invisible characters and with hidden link targets appended.
+/// without invisible characters, with styled letters folded to plain ones
+/// and with hidden link targets appended.
 /// Trusted senders only face the rules that have no false positives in
 /// practice; the content and shape checks are for everyone else. Messages
 /// shorter than `model_min_chars` without links skip the model: one or two
@@ -231,9 +232,9 @@ fn shape_rule(settings: &Settings, content: &str) -> Option<Reason> {
     }
 }
 
-/// Visible text without invisible characters, followed by hidden link targets.
+/// Visible text, folded (see [`text::fold`]), followed by hidden link targets.
 fn classifier_input<'a>(facts: &MessageFacts<'a>) -> Cow<'a, str> {
-    let visible = text::strip_invisible(facts.text);
+    let visible = text::fold(facts.text);
     if facts.hidden_links.is_empty() {
         return visible;
     }
@@ -427,6 +428,44 @@ mod tests {
     }
 
     #[test]
+    fn trusted_member_cannot_post_invite_look_alikes() {
+        let trusted = Standing {
+            trusted: true,
+            ..Standing::default()
+        };
+        for text in [
+            "join telegram.me/+SecretInvite",
+            "join telegram.dog/joinchat/SecretInvite",
+            "tg://join?invite=SecretInvite",
+            "join t. me/+SecretInvite",
+            "join 𝐭.𝐦𝐞/+𝐒𝐞𝐜𝐫𝐞𝐭𝐈𝐧𝐯𝐢𝐭𝐞",
+            "join ｔ．ｍｅ/+SecretInvite",
+        ] {
+            let verdict = check_as(trusted, &MessageFacts::text(text));
+            assert_eq!(reason_of(verdict), Some(Reason::InviteLink), "{text}");
+        }
+    }
+
+    #[test]
+    fn styled_letters_do_not_hide_a_job_offer() {
+        let offer = "𝐋𝐨𝐨𝐤𝐢𝐧𝐠 𝐟𝐨𝐫 𝐩𝐞𝐨𝐩𝐥𝐞 𝐟𝐨𝐫 𝐫𝐞𝐦𝐨𝐭𝐞 𝐰𝐨𝐫𝐤, 𝟑𝟎𝟎$ 𝐩𝐞𝐫 𝐝𝐚𝐲, 𝐏𝐌 𝐦𝐞";
+        assert_eq!(
+            reason_of(check(&MessageFacts::text(offer))),
+            Some(Reason::JobOffer)
+        );
+    }
+
+    #[test]
+    fn styled_letters_do_not_hide_an_ad_in_the_name() {
+        let facts = MessageFacts {
+            text: "Всем привет",
+            sender_name: "𝐒𝐞𝐱𝐲 𝐀𝐧𝐧𝐚",
+            ..MessageFacts::default()
+        };
+        assert_eq!(reason_of(check(&facts)), Some(Reason::ProfileAd));
+    }
+
+    #[test]
     fn newcomer_link_is_spam() {
         let newcomer = Standing {
             newcomer: true,
@@ -500,6 +539,11 @@ mod tests {
         let text = "🔥🔥🔥 Best Videos Here 🍓🍓🍓 Best Photos 👇👇👇👇";
         assert_eq!(
             reason_of(check(&MessageFacts::text(text))),
+            Some(Reason::TooManyEmoji)
+        );
+        let stars = "⭐⭐⭐⭐⭐ Отзывы ⬇️⬇️⬇️ 🆓🆓 1️⃣";
+        assert_eq!(
+            reason_of(check(&MessageFacts::text(stars))),
             Some(Reason::TooManyEmoji)
         );
     }

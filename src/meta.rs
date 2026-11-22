@@ -97,11 +97,50 @@ pub fn mixed_script_words(text: &str) -> usize {
         .count()
 }
 
-/// Pictographic emoji in `text` (custom emoji arrive as such placeholders too).
+/// Emoji in `text` (custom emoji arrive as such placeholders too). A flag is
+/// a pair of regional indicator letters and counts once.
 pub fn emoji_count(text: &str) -> usize {
-    text.chars()
-        .filter(|c| matches!(*c as u32, 0x1F300..=0x1FAFF | 0x2600..=0x27BF))
-        .count()
+    let (mut emoji, mut regional) = (0usize, 0usize);
+    for c in text.chars() {
+        if is_regional_indicator(c) {
+            regional += 1;
+        } else if is_emoji(c) {
+            emoji += 1;
+        }
+    }
+    emoji + regional.div_ceil(2)
+}
+
+fn is_regional_indicator(c: char) -> bool {
+    matches!(c as u32, 0x1F1E6..=0x1F1FF)
+}
+
+/// Pictographs plus the emoji outside the main blocks that spam walls use:
+/// ⭐ ⬇ ⬛ ⏰ ⌛ ▶ ⤴ 〽 ㊙, 🅰 🆓 🈚 🀄 🃏 and the keycap of 1️⃣.
+fn is_emoji(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x1F300..=0x1FAFF
+            | 0x2600..=0x27BF
+            | 0x1F000..=0x1F0FF
+            | 0x1F170..=0x1F1E5
+            | 0x1F200..=0x1F2FF
+            | 0x2B05..=0x2B07
+            | 0x2B1B..=0x2B1C
+            | 0x2B50
+            | 0x2B55
+            | 0x231A..=0x231B
+            | 0x23E9..=0x23FA
+            | 0x25B6
+            | 0x25C0
+            | 0x25FB..=0x25FE
+            | 0x2934..=0x2935
+            | 0x3030
+            | 0x303D
+            | 0x3297
+            | 0x3299
+            | 0x20E3
+    )
 }
 
 /// Whether `text` is only a bot's `@username`.
@@ -132,6 +171,10 @@ mod tests {
     fn counts_emoji() {
         assert_eq!(emoji_count("👇👇👇👇👇 Best Videos Here🍓"), 6);
         assert_eq!(emoji_count("обычный текст :)"), 0);
+        assert_eq!(emoji_count("⭐⭐⭐⭐⭐"), 5);
+        assert_eq!(emoji_count("⬇️⬇️ 🆓 1️⃣ ⏰"), 5);
+        assert_eq!(emoji_count("🇷🇺🇬🇧🇺🇸"), 3);
+        assert_eq!(emoji_count("цена 5€, ©2024, a→b"), 0);
     }
 
     #[test]

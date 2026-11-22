@@ -45,10 +45,7 @@ const MIN_WORDS: usize = 3;
 /// first appearance, from the first [`MAX_CHARS`] chars, at most
 /// [`MAX_WORDS`] of them.
 fn words(text: &str) -> Vec<String> {
-    let start: String = text::strip_invisible(text)
-        .chars()
-        .take(MAX_CHARS)
-        .collect();
+    let start: String = text::fold(text).chars().take(MAX_CHARS).collect();
     let mut seen = HashSet::new();
     start
         .split(|c: char| !c.is_alphanumeric())

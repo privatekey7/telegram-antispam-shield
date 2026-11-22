@@ -13,15 +13,24 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
-/// Telegram private-group invite links (`t.me/+...`, `joinchat`, look-alikes).
+/// Telegram private-group invite links on every Telegram domain
+/// (`t.me/+...`, `telegram.me/+...`, `telegram.dog/joinchat/...`), the
+/// `tg://join` deep link, and copies with a space around the dot or slash
+/// (`t. me/+...`). The `+` form needs an invite hash after it, so a spaced
+/// "it. Me/+1" is not a link.
 static INVITE_LINK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(t\.me/\+|t\.me/joinchat|telegram\.me/joinchat|telegram\.dog/joinchat)")
-        .expect("invite-link regex is valid")
+    Regex::new(
+        r"(?ix)
+        (t|telegram)\s?\.\s?(me|dog)\s?/\s?(\+[\w-]{4,}|joinchat)
+      | tg:\s?//\s?join\?invite=
+        ",
+    )
+    .expect("invite-link regex is valid")
 });
 
 /// A web or Telegram link, including spaced-out ones (`https ://`).
 static LINK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(https?\s*:\s*//|\bt\.me/|\btelegram\.me/|\bwww\.)")
+    Regex::new(r"(?i)(https?\s*:\s*//|\bt\.me/|\btelegram\.(me|dog)/|\btg://|\bwww\.)")
         .expect("link regex is valid")
 });
 
@@ -119,14 +128,14 @@ static ADULT_AD: LazyLock<Regex> = LazyLock::new(|| {
 /// link or an invite. Seen before the member writes anything, so the rule
 /// sticks to wording a real name never has.
 pub fn is_profile_ad(name: &str) -> bool {
-    let name = crate::text::strip_invisible(name);
+    let name = crate::text::fold(name);
     ADULT_AD.is_match(&name) || contains_link(&name) || is_invite_link(&name)
 }
 
 /// Whether a member's bio advertises: adult content or a private-group
 /// invite. Ordinary links stay allowed: people link their channel or site.
 pub fn is_bio_ad(bio: &str) -> bool {
-    let bio = crate::text::strip_invisible(bio);
+    let bio = crate::text::fold(bio);
     ADULT_AD.is_match(&bio) || is_invite_link(&bio)
 }
 
@@ -158,12 +167,21 @@ mod tests {
     fn flags_invite_links() {
         assert!(is_invite_link("join now t.me/+AbCdEf"));
         assert!(is_invite_link("https://t.me/joinchat/XYZ"));
+        assert!(is_invite_link("https://telegram.me/+AbCdEf"));
+        assert!(is_invite_link("telegram.dog/+AbCdEf"));
+        assert!(is_invite_link("TELEGRAM.DOG/joinchat/XYZ"));
+        assert!(is_invite_link("tg://join?invite=AbCdEf"));
+        assert!(is_invite_link("заходи t. me/+AbCdEf"));
+        assert!(is_invite_link("t.me /+AbCdEf"));
+        assert!(is_invite_link("t.me/+79991234567"));
     }
 
     #[test]
     fn ignores_normal_text_and_public_links() {
         assert!(!is_invite_link("see our channel t.me/openchannel"));
         assert!(!is_invite_link("привет, как дела?"));
+        assert!(!is_invite_link("telegram.me/openchannel"));
+        assert!(!is_invite_link("I'll take it. Me/+1 for that"));
     }
 
     #[test]
@@ -171,6 +189,8 @@ mod tests {
         assert!(contains_link("https://claim.ondo-foundation.one/"));
         assert!(contains_link("смотри https ://lineascan .build"));
         assert!(contains_link("t.me/somechannel"));
+        assert!(contains_link("telegram.dog/somechannel"));
+        assert!(contains_link("tg://resolve?domain=somebot"));
         assert!(!contains_link("встретимся в 10:30, ок?"));
     }
 

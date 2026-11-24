@@ -101,8 +101,9 @@ pub fn mixed_script_words(text: &str) -> usize {
 /// placeholders too). A flag is a pair of regional indicator letters and
 /// counts once; so does an emoji with a skin tone (`👍🏽`) and a sequence
 /// joined into one picture (`👨‍👩‍👧`, `🏳️‍🌈`), which would otherwise make five
-/// thumbs-up look like an emoji wall. Only a person, a flag or a heart starts
-/// such a picture: other emoji render apart whatever joins them.
+/// thumbs-up look like an emoji wall. Only the emoji Unicode's joined
+/// sequences begin with start such a picture: others render apart whatever
+/// joins them.
 pub fn emoji_count(text: &str) -> usize {
     let (mut emoji, mut regional) = (0usize, 0usize);
     // Emoji the current picture may still take in, and whether a joiner
@@ -140,8 +141,10 @@ const ZERO_WIDTH_JOINER: char = '\u{200D}';
 /// (`👨‍👩‍👧‍👦`); a wall glued together with joiners is still a wall.
 const MAX_JOINED_EMOJI: usize = 3;
 
-/// Emoji that real joined sequences start with: people, the white and black
-/// flags (`🏳️‍🌈`, `🏴‍☠️`), the heart (`❤️‍🔥`) and the eye.
+/// Emoji that Unicode's joined sequences start with: people, the white and
+/// black flags (`🏳️‍🌈`, `🏴‍☠️`), the heart (`❤️‍🔥`), the eye, and the few animals,
+/// faces and things with a joined variant (`🐕‍🦺`, `🐈‍⬛`, `🐻‍❄️`, `🐦‍🔥`, `😮‍💨`,
+/// `😵‍💫`, `😶‍🌫️`, `🙂‍↔️`, `⛓️‍💥`, `🍄‍🟫`, `🍋‍🟩`).
 fn starts_joined_picture(c: char) -> bool {
     matches!(
         c as u32,
@@ -160,6 +163,16 @@ fn starts_joined_picture(c: char) -> bool {
             | 0x1F3F3..=0x1F3F4
             | 0x1F441
             | 0x2764
+            | 0x1F415
+            | 0x1F408
+            | 0x1F43B
+            | 0x1F426
+            | 0x1F62E
+            | 0x1F635..=0x1F636
+            | 0x1F642
+            | 0x26D3
+            | 0x1F344
+            | 0x1F34B
     )
 }
 
@@ -241,6 +254,7 @@ mod tests {
         assert_eq!(emoji_count("👨‍👩‍👧‍👦 и 👩‍💻"), 2);
         assert_eq!(emoji_count("🏳️‍🌈❤️"), 2);
         assert_eq!(emoji_count("👩🏽‍❤️‍💋‍👨🏻"), 1);
+        assert_eq!(emoji_count("🐕‍🦺🐈‍⬛🐻‍❄️🐦‍🔥😮‍💨"), 5);
         let glued = ["🍓"; 12].join("\u{200D}");
         assert_eq!(emoji_count(&glued), 12, "joiners do not hide a wall");
         let people = ["👩"; 12].join("\u{200D}");

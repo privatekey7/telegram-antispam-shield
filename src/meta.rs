@@ -97,18 +97,48 @@ pub fn mixed_script_words(text: &str) -> usize {
         .count()
 }
 
-/// Emoji in `text` (custom emoji arrive as such placeholders too). A flag is
-/// a pair of regional indicator letters and counts once.
+/// Emoji in `text` as a person counts them (custom emoji arrive as such
+/// placeholders too). A flag is a pair of regional indicator letters and
+/// counts once; so does an emoji with a skin tone (`👍🏽`) and a sequence
+/// joined into one picture (`👨‍👩‍👧`), which would otherwise make five
+/// thumbs-up look like an emoji wall.
 pub fn emoji_count(text: &str) -> usize {
     let (mut emoji, mut regional) = (0usize, 0usize);
+    // Emoji joined to the current picture so far, and whether a joiner
+    // precedes this character.
+    let (mut joined, mut after_joiner) = (0usize, false);
     for c in text.chars() {
+        if c == ZERO_WIDTH_JOINER {
+            after_joiner = true;
+            continue;
+        }
+        if is_emoji_variation(c) {
+            continue;
+        }
         if is_regional_indicator(c) {
             regional += 1;
         } else if is_emoji(c) {
-            emoji += 1;
+            if after_joiner && joined < MAX_JOINED_EMOJI {
+                joined += 1;
+            } else {
+                emoji += 1;
+                joined = 0;
+            }
         }
+        after_joiner = false;
     }
     emoji + regional.div_ceil(2)
+}
+
+const ZERO_WIDTH_JOINER: char = '\u{200D}';
+/// Emoji a joiner may add to one picture. Real sequences join at most four
+/// (`👨‍👩‍👧‍👦`); a wall glued together with joiners is still a wall.
+const MAX_JOINED_EMOJI: usize = 3;
+
+/// Characters that only restyle the emoji before them: skin tones and the
+/// variation selectors.
+fn is_emoji_variation(c: char) -> bool {
+    matches!(c as u32, 0x1F3FB..=0x1F3FF | 0xFE0E..=0xFE0F)
 }
 
 fn is_regional_indicator(c: char) -> bool {
@@ -175,6 +205,15 @@ mod tests {
         assert_eq!(emoji_count("⬇️⬇️ 🆓 1️⃣ ⏰"), 5);
         assert_eq!(emoji_count("🇷🇺🇬🇧🇺🇸"), 3);
         assert_eq!(emoji_count("цена 5€, ©2024, a→b"), 0);
+    }
+
+    #[test]
+    fn skin_tones_and_joined_emoji_count_once() {
+        assert_eq!(emoji_count("👍🏽👍🏽👍🏽👍🏽👍🏽"), 5);
+        assert_eq!(emoji_count("👨‍👩‍👧‍👦 и 👩‍💻"), 2);
+        assert_eq!(emoji_count("🏳️‍🌈❤️"), 2);
+        let glued = ["🍓"; 12].join("\u{200D}");
+        assert_eq!(emoji_count(&glued), 3, "joiners do not hide a wall");
     }
 
     #[test]

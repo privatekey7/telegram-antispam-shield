@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use teloxide::prelude::*;
 use teloxide::types::{Chat, ChatMemberUpdated, MessageEntityKind, MessageId, MessageKind, User};
@@ -13,6 +13,7 @@ use telegram_antispam_shield::config::Action;
 use telegram_antispam_shield::flood::{FloodVerdict, IncomingMessage};
 use telegram_antispam_shield::moderation::{MessageFacts, Reason, Verdict};
 use telegram_antispam_shield::shield::Incoming;
+use telegram_antispam_shield::trust;
 
 use super::actions::{self, FloodAction, Sender};
 use super::reports::{self, Incident};
@@ -139,12 +140,7 @@ async fn moderate(bot: &Bot, state: &AppState, msg: &Message, edited: bool) {
         },
         edited,
     };
-    let (decision, recent) = {
-        let mut shield = state.shield();
-        let decision = shield.inspect(&incoming, Instant::now());
-        let recent = shield.recent_from(incoming.chat, incoming.sender);
-        (decision, recent)
-    };
+    let decision = state.shield().inspect(&incoming, Instant::now());
 
     let Verdict::Spam { score, reason } = decision.verdict else {
         if decision.newly_trusted {
@@ -175,6 +171,7 @@ async fn moderate(bot: &Bot, state: &AppState, msg: &Message, edited: bool) {
     let punishes = state.settings.action != Action::DeleteOnly;
     if punishes && state.settings.cleanup_on_ban {
         // The spammer's other recent messages go too.
+        let recent = state.shield().recent_from(incoming.chat, incoming.sender);
         doomed.extend(recent);
     }
     doomed.sort_unstable();
@@ -354,7 +351,8 @@ fn check_flood(
         text,
         media_group_id: msg.media_group_id().map(|g| g.0.as_str()),
     };
-    match state.flood().check(incoming, Instant::now()) {
+    let at = sent_at(msg, Instant::now(), trust::unix_now());
+    match state.flood().check(incoming, at) {
         FloodVerdict::Allow => None,
         FloodVerdict::Flood {
             reason,
@@ -368,6 +366,16 @@ fn check_flood(
             strike,
         }),
     }
+}
+
+/// When `msg` was sent, on the clock the flood rules run on: `now` minus the
+/// message's age at `now_unix` (Unix seconds). Telegram hands over everything
+/// written while the bot was down or offline in one burst; judged by arrival
+/// time, a member's ordinary messages from those minutes would look like a
+/// flood and get them muted.
+fn sent_at(msg: &Message, now: Instant, now_unix: i64) -> Instant {
+    let age = now_unix.saturating_sub(msg.date.timestamp()).max(0) as u64;
+    now.checked_sub(Duration::from_secs(age)).unwrap_or(now)
 }
 
 /// What a person reads in `msg`: its text or caption, else the words of a
@@ -537,6 +545,40 @@ mod tests {
             .unwrap()
             .extend(content.as_object().unwrap().clone());
         serde_json::from_str(&json.to_string()).unwrap()
+    }
+
+    #[test]
+    fn a_backlog_delivered_at_once_is_not_a_flood() {
+        // Arrange: eight messages written 3 s apart, all handled at `now`.
+        use telegram_antispam_shield::flood::{FloodConfig, FloodGuard};
+        let (now, now_unix) = (Instant::now(), 1_800_000_000);
+        let mut guard = FloodGuard::new(FloodConfig::default());
+
+        // Act
+        let verdicts: Vec<FloodVerdict> = (0..8)
+            .map(|i| {
+                let date = now_unix - 3 * (7 - i);
+                let msg = message(serde_json::json!({"message_id": i, "date": date}));
+                let incoming = IncomingMessage {
+                    chat_id: msg.chat.id.0,
+                    sender_id: 5,
+                    message_id: msg.id.0,
+                    text: None,
+                    media_group_id: None,
+                };
+                guard.check(incoming, sent_at(&msg, now, now_unix))
+            })
+            .collect();
+
+        // Assert
+        assert!(verdicts.iter().all(|v| *v == FloodVerdict::Allow));
+    }
+
+    #[test]
+    fn a_message_dated_in_the_future_is_sent_now() {
+        let now = Instant::now();
+        let msg = message(serde_json::json!({"date": 2_000_000_000}));
+        assert_eq!(sent_at(&msg, now, 1_800_000_000), now);
     }
 
     #[test]

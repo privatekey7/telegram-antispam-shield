@@ -196,10 +196,7 @@ impl History {
 /// Hash of the normalized text and its length in characters, if the text is
 /// long enough to compare.
 fn fingerprint(text: Option<&str>) -> Option<(u64, usize)> {
-    text.and_then(|t| {
-        let chars = text::normalize(t).chars().count();
-        text::fingerprint(t, REPEAT_MIN_CHARS).map(|hash| (hash, chars))
-    })
+    text.and_then(|t| text::fingerprint_with_len(t, REPEAT_MIN_CHARS))
 }
 
 /// Messages among `earlier` with the same text as `fingerprint`.

@@ -148,13 +148,19 @@ pub fn normalize(text: &str) -> String {
 /// Hash of the normalized text, or `None` when it has fewer than `min_chars`
 /// characters (too short to call two messages "the same").
 pub fn fingerprint(text: &str, min_chars: usize) -> Option<u64> {
+    fingerprint_with_len(text, min_chars).map(|(hash, _)| hash)
+}
+
+/// [`fingerprint`] together with the normalized text's length in characters.
+pub fn fingerprint_with_len(text: &str, min_chars: usize) -> Option<(u64, usize)> {
     let normalized = normalize(text);
-    if normalized.chars().count() < min_chars {
+    let chars = normalized.chars().count();
+    if chars < min_chars {
         return None;
     }
     let mut hasher = DefaultHasher::new();
     normalized.hash(&mut hasher);
-    Some(hasher.finish())
+    Some((hasher.finish(), chars))
 }
 
 #[cfg(test)]

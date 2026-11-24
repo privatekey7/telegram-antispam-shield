@@ -22,6 +22,9 @@ pub struct MessageFacts<'a> {
     pub has_link: bool,
     /// Forwarded, or quoting a message from another chat.
     pub forwarded: bool,
+    /// The sender's full name and `@username`, or a channel's title: a
+    /// member can rename themselves into an ad after joining.
+    pub sender_name: &'a str,
 }
 
 /// What the bot knows about the sender in this chat.
@@ -68,6 +71,8 @@ pub enum Reason {
     TooManyMentions,
     Forwarded,
     JobOffer,
+    /// An ad in the sender's name or bio (adult content, links, invites).
+    ProfileAd,
     Model,
 }
 
@@ -106,6 +111,7 @@ impl Reason {
             Reason::TooManyMentions => "too_many_mentions",
             Reason::Forwarded => "forwarded",
             Reason::JobOffer => "job_offer",
+            Reason::ProfileAd => "profile_ad",
             Reason::Model => "ml_model",
         }
     }
@@ -124,7 +130,8 @@ pub enum Verdict {
 ///
 /// Heuristics run first (fast, high precision). If none fire, the ML model
 /// decides using the effective threshold. Rules and model see the text
-/// without invisible characters and with hidden link targets appended.
+/// without invisible characters, with styled letters folded to plain ones
+/// and with hidden link targets appended.
 /// Trusted senders only face the rules that have no false positives in
 /// practice; the content and shape checks are for everyone else. Messages
 /// shorter than `model_min_chars` without links skip the model: one or two
@@ -151,6 +158,9 @@ pub fn classify(
     if standing.trusted {
         return Verdict::Allow;
     }
+    if settings.block_profile_ads && heuristics::is_profile_ad(facts.sender_name) {
+        return rule(Reason::ProfileAd);
+    }
     if settings.block_forwards && facts.forwarded {
         return rule(Reason::Forwarded);
     }
@@ -162,7 +172,7 @@ pub fn classify(
     if settings.block_newcomer_links && standing.newcomer && has_link {
         return rule(Reason::NewcomerLink);
     }
-    if let Some(reason) = shape_rule(settings, content) {
+    if let Some(reason) = shape_rule(settings, content, facts.text) {
         return rule(reason);
     }
     if settings.block_job_offers && heuristics::is_job_offer(content) {
@@ -183,16 +193,28 @@ pub fn classify(
     }
 }
 
-/// Opt-in word lists and the shape checks of [`meta`], in order of precision.
-fn shape_rule(settings: &Settings, content: &str) -> Option<Reason> {
-    let lowered = content.to_lowercase();
-    let reached = |limit: usize, count: usize| limit > 0 && count >= limit;
+/// Whether a new member's profile is an ad: the name (with `@username`) or
+/// the bio, when the bot could read it. Trusted members are not judged by
+/// their profile (see [`classify`]); the caller skips them.
+pub fn is_profile_spam(settings: &Settings, name: &str, bio: Option<&str>) -> bool {
+    settings.block_profile_ads
+        && (heuristics::is_profile_ad(name) || bio.is_some_and(heuristics::is_bio_ad))
+}
 
-    if settings
-        .stop_words
-        .iter()
-        .any(|w| lowered.contains(w.as_str()))
-    {
+/// Opt-in word lists and the shape checks of [`meta`], in order of precision.
+/// Emoji are counted in the `visible` text as sent: `content` has lost the
+/// joiners that make several emoji one picture.
+fn shape_rule(settings: &Settings, content: &str, visible: &str) -> Option<Reason> {
+    let reached = |limit: usize, count: usize| limit > 0 && count >= limit;
+    let has_stop_word = || {
+        let lowered = content.to_lowercase();
+        settings
+            .stop_words
+            .iter()
+            .any(|w| lowered.contains(w.as_str()))
+    };
+
+    if !settings.stop_words.is_empty() && has_stop_word() {
         Some(Reason::StopWord)
     } else if meta::blocked_script(content, &settings.blocked_scripts).is_some() {
         Some(Reason::BlockedScript)
@@ -203,7 +225,8 @@ fn shape_rule(settings: &Settings, content: &str) -> Option<Reason> {
         meta::mixed_script_words(content),
     ) {
         Some(Reason::MixedScripts)
-    } else if reached(settings.emoji_limit, meta::emoji_count(content)) {
+    } else if settings.emoji_limit > 0 && reached(settings.emoji_limit, meta::emoji_count(visible))
+    {
         Some(Reason::TooManyEmoji)
     } else if reached(settings.link_limit, heuristics::link_count(content)) {
         Some(Reason::TooManyLinks)
@@ -214,9 +237,9 @@ fn shape_rule(settings: &Settings, content: &str) -> Option<Reason> {
     }
 }
 
-/// Visible text without invisible characters, followed by hidden link targets.
+/// Visible text, folded (see [`text::fold`]), followed by hidden link targets.
 fn classifier_input<'a>(facts: &MessageFacts<'a>) -> Cow<'a, str> {
-    let visible = text::strip_invisible(facts.text);
+    let visible = text::fold(facts.text);
     if facts.hidden_links.is_empty() {
         return visible;
     }
@@ -289,6 +312,49 @@ mod tests {
             Standing::default(),
         );
         assert_ne!(reason_of(verdict), Some(Reason::JobOffer));
+    }
+
+    #[test]
+    fn an_ad_in_the_senders_name_is_spam() {
+        let facts = MessageFacts {
+            text: "Всем привет",
+            sender_name: "🔞 раздеватор по фото 🍌",
+            ..MessageFacts::default()
+        };
+        assert_eq!(reason_of(check(&facts)), Some(Reason::ProfileAd));
+    }
+
+    #[test]
+    fn a_trusted_sender_is_not_judged_by_name() {
+        let model = Model::load_default().unwrap();
+        let facts = MessageFacts {
+            text: "Всем привет",
+            sender_name: "Sexy Anna",
+            ..MessageFacts::default()
+        };
+        let standing = Standing {
+            trusted: true,
+            newcomer: false,
+        };
+        assert_eq!(
+            classify(&model, &Settings::default(), &facts, standing),
+            Verdict::Allow
+        );
+    }
+
+    #[test]
+    fn profile_rule_can_be_disabled() {
+        let settings = Settings {
+            block_profile_ads: false,
+            ..Settings::default()
+        };
+        assert!(!is_profile_spam(&settings, "🔞 nudes", Some("интим")));
+        assert!(is_profile_spam(
+            &Settings::default(),
+            "Anna",
+            Some("интим 18+")
+        ));
+        assert!(!is_profile_spam(&Settings::default(), "Anna", None));
     }
 
     #[test]
@@ -367,6 +433,44 @@ mod tests {
     }
 
     #[test]
+    fn trusted_member_cannot_post_invite_look_alikes() {
+        let trusted = Standing {
+            trusted: true,
+            ..Standing::default()
+        };
+        for text in [
+            "join telegram.me/+SecretInvite",
+            "join telegram.dog/joinchat/SecretInvite",
+            "tg://join?invite=SecretInvite",
+            "join t. me/+SecretInvite",
+            "join 𝐭.𝐦𝐞/+𝐒𝐞𝐜𝐫𝐞𝐭𝐈𝐧𝐯𝐢𝐭𝐞",
+            "join ｔ．ｍｅ/+SecretInvite",
+        ] {
+            let verdict = check_as(trusted, &MessageFacts::text(text));
+            assert_eq!(reason_of(verdict), Some(Reason::InviteLink), "{text}");
+        }
+    }
+
+    #[test]
+    fn styled_letters_do_not_hide_a_job_offer() {
+        let offer = "𝐋𝐨𝐨𝐤𝐢𝐧𝐠 𝐟𝐨𝐫 𝐩𝐞𝐨𝐩𝐥𝐞 𝐟𝐨𝐫 𝐫𝐞𝐦𝐨𝐭𝐞 𝐰𝐨𝐫𝐤, 𝟑𝟎𝟎$ 𝐩𝐞𝐫 𝐝𝐚𝐲, 𝐏𝐌 𝐦𝐞";
+        assert_eq!(
+            reason_of(check(&MessageFacts::text(offer))),
+            Some(Reason::JobOffer)
+        );
+    }
+
+    #[test]
+    fn styled_letters_do_not_hide_an_ad_in_the_name() {
+        let facts = MessageFacts {
+            text: "Всем привет",
+            sender_name: "𝐒𝐞𝐱𝐲 𝐀𝐧𝐧𝐚",
+            ..MessageFacts::default()
+        };
+        assert_eq!(reason_of(check(&facts)), Some(Reason::ProfileAd));
+    }
+
+    #[test]
     fn newcomer_link_is_spam() {
         let newcomer = Standing {
             newcomer: true,
@@ -440,6 +544,11 @@ mod tests {
         let text = "🔥🔥🔥 Best Videos Here 🍓🍓🍓 Best Photos 👇👇👇👇";
         assert_eq!(
             reason_of(check(&MessageFacts::text(text))),
+            Some(Reason::TooManyEmoji)
+        );
+        let stars = "⭐⭐⭐⭐⭐ Отзывы ⬇️⬇️⬇️ 🆓🆓 1️⃣";
+        assert_eq!(
+            reason_of(check(&MessageFacts::text(stars))),
             Some(Reason::TooManyEmoji)
         );
     }

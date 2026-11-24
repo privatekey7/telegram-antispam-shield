@@ -135,12 +135,13 @@ impl Shield {
                 .record(msg.chat, msg.sender, msg.message_id, text, now)
         };
         let standing = self.standing(msg.chat, msg.sender, now);
-        let vouched = text.is_some_and(|t| self.samples.resembles_ham(msg.chat, t));
+        let resemblance = text
+            .map(|t| self.samples.resemblance(msg.chat, t, !standing.trusted))
+            .unwrap_or_default();
+        let vouched = resemblance.ham;
 
-        let learned = (!standing.trusted
-            && !vouched
-            && text.is_some_and(|t| self.samples.resembles_spam(msg.chat, t)))
-        .then(|| spam(Reason::LearnedSpam, Vec::new()));
+        let learned = (!standing.trusted && !vouched && resemblance.spam)
+            .then(|| spam(Reason::LearnedSpam, Vec::new()));
         let mut decision = self
             .history_rule(msg.chat, &echoes, standing)
             .or(learned)
@@ -235,8 +236,37 @@ impl Shield {
     }
 
     /// Remember that `user` joined `chat` (for the newcomer-link rule).
-    pub fn joined(&mut self, chat: i64, user: i64, now: Instant) {
-        self.history.joined(chat, user, now);
+    /// Returns `false` for a second sighting of the same join: Telegram may
+    /// report it both as a service message and as a `chat_member` update.
+    pub fn joined(&mut self, chat: i64, user: i64, now: Instant) -> bool {
+        self.history.joined(chat, user, now)
+    }
+
+    /// Judge the profile of `user`, who just joined `chat`: `name` is the
+    /// full name with `@username`, `bio` the bio when the bot could read it.
+    /// Trusted members (a regular rejoining) are not judged. A verdict of
+    /// spam is remembered for [`Shield::joined_with_profile_ad`].
+    pub fn judge_profile(
+        &mut self,
+        chat: i64,
+        user: i64,
+        name: &str,
+        bio: Option<&str>,
+    ) -> Option<Reason> {
+        if self.trust.is_trusted(chat, user)
+            || !crate::moderation::is_profile_spam(&self.settings, name, bio)
+        {
+            return None;
+        }
+        self.history.mark_profile_ad(chat, user);
+        self.trust.revoke(chat, user);
+        Some(Reason::ProfileAd)
+    }
+
+    /// Whether `user`'s latest join in `chat` was judged an ad, so its
+    /// "joined" notice should go even when the other sighting judged it.
+    pub fn joined_with_profile_ad(&self, chat: i64, user: i64) -> bool {
+        self.history.joined_with_profile_ad(chat, user)
     }
 
     /// `sender`'s messages still in the history (to clean up after a ban).
@@ -471,6 +501,30 @@ mod tests {
             )),
             Some(Reason::NewcomerLink)
         );
+    }
+
+    #[test]
+    fn an_ad_in_a_newcomers_name_is_judged_once_per_join() {
+        let mut shield = shield();
+        let now = Instant::now();
+        let name = "🔞 раздеватор по фото 🍌 @NEWTONCONFIRMATION";
+
+        assert!(shield.joined(CHAT, 9, now));
+        assert_eq!(
+            shield.judge_profile(CHAT, 9, name, None),
+            Some(Reason::ProfileAd)
+        );
+        assert!(!shield.joined(CHAT, 9, now + mins(1)));
+        assert!(shield.joined_with_profile_ad(CHAT, 9));
+        assert_eq!(shield.judge_profile(CHAT, 10, "Artur", None), None);
+        assert!(!shield.joined_with_profile_ad(CHAT, 10));
+    }
+
+    #[test]
+    fn a_trusted_member_is_not_judged_by_profile() {
+        let mut shield = shield();
+        shield.vouch(CHAT, 9, "обычное сообщение");
+        assert_eq!(shield.judge_profile(CHAT, 9, "Sexy Anna", None), None);
     }
 
     #[test]

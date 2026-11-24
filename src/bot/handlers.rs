@@ -2,17 +2,18 @@
 //! private commands.
 
 use std::borrow::Cow;
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use teloxide::prelude::*;
-use teloxide::types::{ChatMemberUpdated, MessageEntityKind, MessageKind, User};
+use teloxide::types::{Chat, ChatMemberUpdated, MessageEntityKind, MessageId, MessageKind, User};
 
 use telegram_antispam_shield::access::Access;
 use telegram_antispam_shield::config::Action;
 use telegram_antispam_shield::flood::{FloodVerdict, IncomingMessage};
-use telegram_antispam_shield::moderation::{MessageFacts, Verdict};
+use telegram_antispam_shield::moderation::{MessageFacts, Reason, Verdict};
 use telegram_antispam_shield::shield::Incoming;
+use telegram_antispam_shield::trust;
 
 use super::actions::{self, FloodAction, Sender};
 use super::reports::{self, Incident};
@@ -43,7 +44,7 @@ pub async fn on_message(bot: Bot, msg: Message, state: Arc<AppState>) -> Respons
 
     if let Some(members) = msg.new_chat_members() {
         for member in members.iter().filter(|m| !m.is_bot) {
-            on_join(&state, msg.chat.id, member);
+            on_join(&bot, &state, &msg.chat, member, Some(msg.id)).await;
         }
         delete_service_message(&bot, &state, &msg).await;
         return Ok(());
@@ -124,6 +125,7 @@ async fn moderate(bot: &Bot, state: &AppState, msg: &Message, edited: bool) {
 
     let visible = text.unwrap_or_default();
     let links = hidden_links(msg, visible);
+    let sender_name = sender.profile_name();
     let incoming = Incoming {
         chat: msg.chat.id.0,
         sender: sender.id(),
@@ -134,15 +136,11 @@ async fn moderate(bot: &Bot, state: &AppState, msg: &Message, edited: bool) {
             inline_keyboard: has_inline_keyboard(msg),
             has_link: has_link_entity(msg),
             forwarded: is_forwarded(msg),
+            sender_name: &sender_name,
         },
         edited,
     };
-    let (decision, recent) = {
-        let mut shield = state.shield();
-        let decision = shield.inspect(&incoming, Instant::now());
-        let recent = shield.recent_from(incoming.chat, incoming.sender);
-        (decision, recent)
-    };
+    let decision = state.shield().inspect(&incoming, Instant::now());
 
     let Verdict::Spam { score, reason } = decision.verdict else {
         if decision.newly_trusted {
@@ -173,6 +171,7 @@ async fn moderate(bot: &Bot, state: &AppState, msg: &Message, edited: bool) {
     let punishes = state.settings.action != Action::DeleteOnly;
     if punishes && state.settings.cleanup_on_ban {
         // The spammer's other recent messages go too.
+        let recent = state.shield().recent_from(incoming.chat, incoming.sender);
         doomed.extend(recent);
     }
     doomed.sort_unstable();
@@ -202,16 +201,89 @@ pub async fn on_chat_member(
         !update.old_chat_member.kind.is_present() && update.new_chat_member.kind.is_present();
     let user = &update.new_chat_member.user;
     if joined && !user.is_bot && chat_allowed(&bot, &state, update.chat.id).await {
-        on_join(&state, update.chat.id, user);
+        on_join(&bot, &state, &update.chat, user, None).await;
     }
     Ok(())
 }
 
-/// Remember the join for the newcomer rule.
-fn on_join(state: &AppState, chat: ChatId, user: &User) {
+/// Remember the join for the newcomer rule and, the first time the join is
+/// seen, judge the newcomer's profile: an ad in the name or bio gets the
+/// configured action and a report without waiting for a message. The
+/// "joined" `notice` of such a member is deleted, whichever sighting
+/// judged it, because the notice itself shows the ad to the whole chat.
+async fn on_join(bot: &Bot, state: &AppState, chat: &Chat, user: &User, notice: Option<MessageId>) {
+    let (chat_id, user_id) = (chat.id.0, user.id.0 as i64);
+    let first = state.shield().joined(chat_id, user_id, Instant::now());
+    let reason = if first {
+        judge_profile(bot, state, chat_id, user).await
+    } else {
+        None
+    };
+    let ad = reason.is_some() || state.shield().joined_with_profile_ad(chat_id, user_id);
+    if !ad || state.settings.dry_run {
+        if let Some(reason) = reason {
+            log_profile_ad(state, chat_id, user_id, reason);
+        }
+        return;
+    }
+    if let Some(id) = notice {
+        actions::delete_all(bot, chat.id, [id.0]).await;
+    }
+    let Some(reason) = reason else {
+        return; // judged and punished on the other sighting
+    };
+    log_profile_ad(state, chat_id, user_id, reason);
+    let sender = Sender::User(user);
+    actions::punish_spammer(bot, state.settings.action, chat.id, &sender).await;
+    let profile = sender.profile_name();
+    let incident = Incident {
+        chat,
+        sender: &sender,
+        text: &profile,
+        reason,
+        score: 1.0,
+        deleted: usize::from(notice.is_some()),
+        edited: false,
+    };
+    reports::send(bot, state, incident).await;
+}
+
+/// The profile rule on a newcomer: the name first, then the bio, which
+/// costs a request and is read only when the name passes.
+async fn judge_profile(bot: &Bot, state: &AppState, chat: i64, user: &User) -> Option<Reason> {
+    if !state.settings.block_profile_ads {
+        return None;
+    }
+    let (user_id, name) = (user.id.0 as i64, Sender::User(user).profile_name());
+    if let Some(reason) = state.shield().judge_profile(chat, user_id, &name, None) {
+        return Some(reason);
+    }
+    if state.shield().is_trusted(chat, user_id) {
+        return None;
+    }
+    let bio = match bot.get_chat(user.id).await {
+        Ok(full) => full.bio().map(str::to_owned),
+        Err(e) => {
+            tracing::debug!(error = %e, user = user_id, "bio_unavailable");
+            None
+        }
+    };
+    let bio = bio?;
     state
         .shield()
-        .joined(chat.0, user.id.0 as i64, Instant::now());
+        .judge_profile(chat, user_id, &name, Some(&bio))
+}
+
+fn log_profile_ad(state: &AppState, chat: i64, user: i64, reason: Reason) {
+    tracing::info!(
+        chat,
+        user,
+        score = 1.0,
+        reason = reason.as_str(),
+        on_join = true,
+        dry_run = state.settings.dry_run,
+        "spam_detected"
+    );
 }
 
 /// Delete a "joined" / "left" notice when configured.
@@ -279,7 +351,8 @@ fn check_flood(
         text,
         media_group_id: msg.media_group_id().map(|g| g.0.as_str()),
     };
-    match state.flood().check(incoming, Instant::now()) {
+    let at = sent_at(msg, clock_anchor());
+    match state.flood().check(incoming, at) {
         FloodVerdict::Allow => None,
         FloodVerdict::Flood {
             reason,
@@ -292,6 +365,30 @@ fn check_flood(
             mute_for,
             strike,
         }),
+    }
+}
+
+/// One moment on both clocks, taken once: the monotonic one the flood rules
+/// run on and Unix seconds, which message dates use.
+fn clock_anchor() -> (Instant, i64) {
+    static ANCHOR: OnceLock<(Instant, i64)> = OnceLock::new();
+    *ANCHOR.get_or_init(|| (Instant::now(), trust::unix_now()))
+}
+
+/// When `msg` was sent, on the clock the flood rules run on: its date placed
+/// relative to `anchor`. Telegram hands over everything written while the
+/// bot was down or offline in one burst; judged by arrival time, a member's
+/// ordinary messages from those minutes would look like a flood and get them
+/// muted. The gap between two messages is the gap between their dates,
+/// whenever they are handled.
+fn sent_at(msg: &Message, (anchor, anchor_unix): (Instant, i64)) -> Instant {
+    let offset = msg.date.timestamp().saturating_sub(anchor_unix);
+    let span = Duration::from_secs(offset.unsigned_abs());
+    if offset >= 0 {
+        anchor.checked_add(span).unwrap_or(anchor)
+    } else {
+        // Older than the machine's clock can express: as old as it gets.
+        anchor.checked_sub(span).unwrap_or(anchor)
     }
 }
 
@@ -425,7 +522,7 @@ fn status_text(state: &AppState) -> String {
     .join(", ");
     format!(
         "🛡 Anti-Spam Shield\nthreshold: {threshold:.2} (model from {} chars)\naction: {:?}\n\
-         dry_run: {}\njob_offers: {}\nnewcomer_links: {}\ncampaigns: {}\nrepeat_limit: {}\n\
+         dry_run: {}\njob_offers: {}\nprofile_ads: {}\nnewcomer_links: {}\ncampaigns: {}\nrepeat_limit: {}\n\
          bot_mentions: {}\nmixed_script_words: {}\nemoji_limit: {}\nopt_in: {}\n\
          learned_spam: {learned}\nwarn_limit: {}\nreports: {reports}\n\
          trust: {trust_line}\nstorage: {storage}\nexempt_admins: {}\nallowed_chats: {allowed}\n\
@@ -434,6 +531,7 @@ fn status_text(state: &AppState) -> String {
         settings.action,
         settings.dry_run,
         on_off(settings.block_job_offers),
+        on_off(settings.block_profile_ads),
         on_off(settings.block_newcomer_links),
         on_off(settings.block_campaigns),
         settings.repeat_limit,
@@ -461,6 +559,44 @@ mod tests {
             .unwrap()
             .extend(content.as_object().unwrap().clone());
         serde_json::from_str(&json.to_string()).unwrap()
+    }
+
+    #[test]
+    fn a_backlog_delivered_at_once_is_not_a_flood() {
+        // Arrange: eight messages written 3 s apart, all handled at once.
+        use telegram_antispam_shield::flood::{FloodConfig, FloodGuard};
+        let anchor = (Instant::now(), 1_800_000_000);
+        let mut guard = FloodGuard::new(FloodConfig::default());
+
+        // Act
+        let verdicts: Vec<FloodVerdict> = (0..8)
+            .map(|i| {
+                let date = anchor.1 - 3 * (7 - i);
+                let msg = message(serde_json::json!({"message_id": i, "date": date}));
+                let incoming = IncomingMessage {
+                    chat_id: msg.chat.id.0,
+                    sender_id: 5,
+                    message_id: msg.id.0,
+                    text: None,
+                    media_group_id: None,
+                };
+                guard.check(incoming, sent_at(&msg, anchor))
+            })
+            .collect();
+
+        // Assert
+        assert!(verdicts.iter().all(|v| *v == FloodVerdict::Allow));
+    }
+
+    #[test]
+    fn the_gap_between_messages_is_the_gap_between_their_dates() {
+        let anchor = (Instant::now(), 1_800_000_000);
+        let earlier = message(serde_json::json!({"date": anchor.1 - 4}));
+        let later = message(serde_json::json!({"date": anchor.1 + 6}));
+
+        let gap = sent_at(&later, anchor).duration_since(sent_at(&earlier, anchor));
+
+        assert_eq!(gap, Duration::from_secs(10));
     }
 
     #[test]

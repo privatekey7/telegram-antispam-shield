@@ -20,6 +20,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through for them.
 - The emoji-wall check counts ⭐ ⬇️ ⏰ ▶️ 🆓 🅰 🀄 keycaps (1️⃣) and flags (one
   per flag), which it used to miss.
+- Messages written while the bot was down or offline no longer look like a
+  flood. Telegram delivers them in one burst, and the flood rules judged them
+  by arrival time: a member who wrote seven ordinary messages during a
+  two-minute outage was muted and lost them all. The rules now use the time
+  each message was sent.
+- The emoji-wall check counts an emoji with a skin tone (`👍🏽`) and a joined
+  sequence (`👨‍👩‍👧‍👦`, `🏳️‍🌈`) once. Five thumbs-up with a skin tone used to
+  count as ten emoji and were deleted as a wall.
+- The invite-link rule no longer fires on other sites whose address ends in
+  `t.me` or `telegram.me` (`support.me/+1234…`, `chat.me/joinchat`).
+- A blank or mistyped on/off setting (`ANTISPAM_FLOOD_ENABLED=`, `ture`)
+  keeps the documented default and logs a warning. It used to mean "off",
+  which silently disabled checks that are on by default.
+- A custom model (`MODEL_PATH`) with no weights is rejected at start instead
+  of crashing the bot on the first message.
+
+### Changed
+- Scoring a message with the model is about 7× faster (45 → 6 µs for a
+  typical message): features are hashed without building a string for each.
+- Less work per message: learned samples are compared after splitting the
+  text once (and not at all in a chat without samples), the sender's recent
+  messages are collected only for spam, and the stop-word check is skipped
+  when no stop words are set.
+- The state file uses `synchronous=NORMAL` with WAL: writes no longer wait
+  for the disk. The file cannot be corrupted by this; a power cut may lose
+  the last few writes.
 
 ## [0.4.0] - 2026-11-17
 

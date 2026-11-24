@@ -235,12 +235,23 @@ fn env_count(key: &str, default: usize) -> usize {
 }
 
 fn env_bool(key: &str, default: bool) -> bool {
-    match env::var(key) {
-        Ok(v) => matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
-        Err(_) => default,
+    let raw = env::var(key).ok();
+    parse_bool(raw.as_deref()).unwrap_or_else(|| {
+        if raw.is_some_and(|v| !v.trim().is_empty()) {
+            tracing::warn!("{key} is not true or false: using the default ({default})");
+        }
+        default
+    })
+}
+
+/// `true`/`false` (also `1`/`0`, `yes`/`no`, `on`/`off`); `None` when unset,
+/// blank or anything else, so the default applies. A blank `KEY=` line or a
+/// typo must not silently switch off a check that is on by default.
+fn parse_bool(raw: Option<&str>) -> Option<bool> {
+    match raw?.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
     }
 }
 
@@ -447,6 +458,17 @@ pub fn bot_token() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bool_parsing_keeps_the_default_for_blank_or_unknown_values() {
+        assert_eq!(parse_bool(Some(" TRUE ")), Some(true));
+        assert_eq!(parse_bool(Some("on")), Some(true));
+        assert_eq!(parse_bool(Some("0")), Some(false));
+        assert_eq!(parse_bool(Some("No")), Some(false));
+        assert_eq!(parse_bool(Some("")), None);
+        assert_eq!(parse_bool(Some("ture")), None);
+        assert_eq!(parse_bool(None), None);
+    }
 
     #[test]
     fn action_parsing() {

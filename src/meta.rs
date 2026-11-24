@@ -97,11 +97,121 @@ pub fn mixed_script_words(text: &str) -> usize {
         .count()
 }
 
-/// Pictographic emoji in `text` (custom emoji arrive as such placeholders too).
+/// Emoji in `text` as a person counts them (custom emoji arrive as such
+/// placeholders too). A flag is a pair of regional indicator letters and
+/// counts once; so does an emoji with a skin tone (`👍🏽`) and a sequence
+/// joined into one picture (`👨‍👩‍👧`, `🏳️‍🌈`), which would otherwise make five
+/// thumbs-up look like an emoji wall. Only the emoji Unicode's joined
+/// sequences begin with start such a picture: others render apart whatever
+/// joins them.
 pub fn emoji_count(text: &str) -> usize {
-    text.chars()
-        .filter(|c| matches!(*c as u32, 0x1F300..=0x1FAFF | 0x2600..=0x27BF))
-        .count()
+    let (mut emoji, mut regional) = (0usize, 0usize);
+    // Emoji the current picture may still take in, and whether a joiner
+    // precedes this character.
+    let (mut room, mut after_joiner) = (0usize, false);
+    for c in text.chars() {
+        if c == ZERO_WIDTH_JOINER {
+            after_joiner = true;
+            continue;
+        }
+        if is_emoji_variation(c) {
+            continue;
+        }
+        if is_regional_indicator(c) {
+            regional += 1;
+        } else if is_emoji(c) {
+            if after_joiner && room > 0 {
+                room -= 1;
+            } else {
+                emoji += 1;
+                room = if starts_joined_picture(c) {
+                    MAX_JOINED_EMOJI
+                } else {
+                    0
+                };
+            }
+        }
+        after_joiner = false;
+    }
+    emoji + regional.div_ceil(2)
+}
+
+const ZERO_WIDTH_JOINER: char = '\u{200D}';
+/// Emoji a joiner may add to one picture. Real sequences join at most four
+/// (`👨‍👩‍👧‍👦`); a wall glued together with joiners is still a wall.
+const MAX_JOINED_EMOJI: usize = 3;
+
+/// Emoji that Unicode's joined sequences start with: people, the white and
+/// black flags (`🏳️‍🌈`, `🏴‍☠️`), the heart (`❤️‍🔥`), the eye, and the few animals,
+/// faces and things with a joined variant (`🐕‍🦺`, `🐈‍⬛`, `🐻‍❄️`, `🐦‍🔥`, `😮‍💨`,
+/// `😵‍💫`, `😶‍🌫️`, `🙂‍↔️`, `⛓️‍💥`, `🍄‍🟫`, `🍋‍🟩`).
+fn starts_joined_picture(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x1F466..=0x1F469
+            | 0x1F46E..=0x1F487
+            | 0x1F3C3..=0x1F3CC
+            | 0x1F645..=0x1F64E
+            | 0x1F6A3
+            | 0x1F6B4..=0x1F6B6
+            | 0x1F926
+            | 0x1F937..=0x1F93E
+            | 0x1F9B8..=0x1F9B9
+            | 0x1F9CD..=0x1F9DF
+            | 0x1F575
+            | 0x26F9
+            | 0x1F3F3..=0x1F3F4
+            | 0x1F441
+            | 0x2764
+            | 0x1F415
+            | 0x1F408
+            | 0x1F43B
+            | 0x1F426
+            | 0x1F62E
+            | 0x1F635..=0x1F636
+            | 0x1F642
+            | 0x26D3
+            | 0x1F344
+            | 0x1F34B
+    )
+}
+
+/// Characters that only restyle the emoji before them: skin tones and the
+/// variation selectors.
+fn is_emoji_variation(c: char) -> bool {
+    matches!(c as u32, 0x1F3FB..=0x1F3FF | 0xFE0E..=0xFE0F)
+}
+
+fn is_regional_indicator(c: char) -> bool {
+    matches!(c as u32, 0x1F1E6..=0x1F1FF)
+}
+
+/// Pictographs plus the emoji outside the main blocks that spam walls use:
+/// ⭐ ⬇ ⬛ ⏰ ⌛ ▶ ⤴ 〽 ㊙, 🅰 🆓 🈚 🀄 🃏 and the keycap of 1️⃣.
+fn is_emoji(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x1F300..=0x1FAFF
+            | 0x2600..=0x27BF
+            | 0x1F000..=0x1F0FF
+            | 0x1F170..=0x1F1E5
+            | 0x1F200..=0x1F2FF
+            | 0x2B05..=0x2B07
+            | 0x2B1B..=0x2B1C
+            | 0x2B50
+            | 0x2B55
+            | 0x231A..=0x231B
+            | 0x23E9..=0x23FA
+            | 0x25B6
+            | 0x25C0
+            | 0x25FB..=0x25FE
+            | 0x2934..=0x2935
+            | 0x3030
+            | 0x303D
+            | 0x3297
+            | 0x3299
+            | 0x20E3
+    )
 }
 
 /// Whether `text` is only a bot's `@username`.
@@ -132,6 +242,23 @@ mod tests {
     fn counts_emoji() {
         assert_eq!(emoji_count("👇👇👇👇👇 Best Videos Here🍓"), 6);
         assert_eq!(emoji_count("обычный текст :)"), 0);
+        assert_eq!(emoji_count("⭐⭐⭐⭐⭐"), 5);
+        assert_eq!(emoji_count("⬇️⬇️ 🆓 1️⃣ ⏰"), 5);
+        assert_eq!(emoji_count("🇷🇺🇬🇧🇺🇸"), 3);
+        assert_eq!(emoji_count("цена 5€, ©2024, a→b"), 0);
+    }
+
+    #[test]
+    fn skin_tones_and_joined_emoji_count_once() {
+        assert_eq!(emoji_count("👍🏽👍🏽👍🏽👍🏽👍🏽"), 5);
+        assert_eq!(emoji_count("👨‍👩‍👧‍👦 и 👩‍💻"), 2);
+        assert_eq!(emoji_count("🏳️‍🌈❤️"), 2);
+        assert_eq!(emoji_count("👩🏽‍❤️‍💋‍👨🏻"), 1);
+        assert_eq!(emoji_count("🐕‍🦺🐈‍⬛🐻‍❄️🐦‍🔥😮‍💨"), 5);
+        let glued = ["🍓"; 12].join("\u{200D}");
+        assert_eq!(emoji_count(&glued), 12, "joiners do not hide a wall");
+        let people = ["👩"; 12].join("\u{200D}");
+        assert_eq!(emoji_count(&people), 3, "a picture joins four at most");
     }
 
     #[test]

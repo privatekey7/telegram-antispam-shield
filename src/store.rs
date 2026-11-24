@@ -127,6 +127,10 @@ impl Store {
             Connection::open(&path).with_context(|| format!("cannot open {}", path.display()))?;
         // WAL keeps reads cheap while a write is in progress.
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        // With WAL, NORMAL still cannot corrupt the file; a power cut may
+        // lose the last few writes (a trust count), and every write stops
+        // waiting for the disk.
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
         Store::with_connection(conn)
     }
 

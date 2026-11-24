@@ -6,6 +6,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Styled letters no longer hide spam from the rules. Mathematical
+  bold/italic/script (`𝐫𝐞𝐦𝐨𝐭𝐞 𝐰𝐨𝐫𝐤`), fullwidth (`ｔ.ｍｅ/+…`), circled
+  (`Ⓢⓔⓧⓨ`) and letterlike look-alikes are folded to plain letters (NFKC)
+  before the invite, job-offer, profile-ad and learned-sample checks, the
+  model and the repeat fingerprints. Ordinary text, `№` included, reaches the
+  model unchanged. Hangul fillers and invisible operators now count as
+  invisible characters.
+- The invite-link rule also catches `telegram.me/+…`, `telegram.dog/+…`,
+  `tg://join?invite=…` and copies with a space around the dot or slash
+  (`t. me/+…`). Trusted members face this rule too, so these used to slip
+  through for them.
+- The emoji-wall check counts ⭐ ⬇️ ⏰ ▶️ 🆓 🅰 🀄 keycaps (1️⃣) and flags (one
+  per flag), which it used to miss.
+- Messages written while the bot was down or offline no longer look like a
+  flood. Telegram delivers them in one burst, and the flood rules judged them
+  by arrival time: a member who wrote seven ordinary messages during a
+  two-minute outage was muted and lost them all. The rules now use the time
+  each message was sent.
+- The emoji-wall check counts an emoji with a skin tone (`👍🏽`) and a joined
+  sequence (`👨‍👩‍👧‍👦`, `🏳️‍🌈`) once. Five thumbs-up with a skin tone used to
+  count as ten emoji and were deleted as a wall.
+- The invite-link rule no longer fires on other sites whose address ends in
+  `t.me` or `telegram.me` (`support.me/+1234…`, `chat.me/joinchat`).
+- A blank or mistyped on/off setting (`ANTISPAM_FLOOD_ENABLED=`, `ture`)
+  keeps the documented default and logs a warning. It used to mean "off",
+  which silently disabled checks that are on by default.
+- A custom model (`MODEL_PATH`) with no weights is rejected at start instead
+  of crashing the bot on the first message.
+
+### Changed
+- Scoring a message with the model is about 7× faster (45 → 6 µs for a
+  typical message): features are hashed without building a string for each.
+- Less work per message: learned samples are compared after splitting the
+  text once (and not at all in a chat without samples), the sender's recent
+  messages are collected only for spam, and the stop-word check is skipped
+  when no stop words are set.
+- The state file uses `synchronous=NORMAL` with WAL: writes no longer wait
+  for the disk. The file cannot be corrupted by this; a power cut may lose
+  the last few writes.
+
+## [0.4.0] - 2026-11-17
+
+### Added
+- Profile-ad rule (`ANTISPAM_BLOCK_PROFILE_ADS`, on by default). A newcomer
+  whose name or `@username` advertises adult content ("🔞 раздеватор по
+  фото", "nudes", "эскорт") or a link, or whose bio advertises adult content
+  or a `t.me/+` invite, gets the configured action and a report as soon as
+  they join, and their "joined" notice is deleted even when
+  `ANTISPAM_DELETE_SERVICE_MESSAGES` is off. Such accounts often never
+  write: the notice itself was the ad. The bio is read (one `getChat` call)
+  only when the name passes. The name is also checked on every message from
+  an untrusted sender, so renaming into an ad after joining does not help.
+  None of the 393 member names in the reference chat export trips it.
+- `/status` shows `profile_ads`.
+
+### Security
+- `rusqlite` 0.41.1 with `libsqlite3-sys` 0.39.1, which bundles a SQLite
+  fixed for CVE-2026-119375 (RUSTSEC-2026-0459). The minimum Rust version
+  rises to 1.89 because of it. The Docker image already builds with 1.99.
+
 ## [0.3.1] - 2026-10-25
 
 ### Removed
@@ -331,7 +392,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-stage, non-root Dockerfile and Railway deploy config.
 - GitHub Actions CI: rustfmt, clippy, tests, `cargo audit`, gitleaks.
 
-[Unreleased]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.2.1...v0.2.2

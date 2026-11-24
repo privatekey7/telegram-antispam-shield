@@ -47,6 +47,19 @@ impl Sender<'_> {
         }
     }
 
+    /// The full name (user) or title (channel) followed by the
+    /// `@username`: what the profile rule reads.
+    pub fn profile_name(&self) -> String {
+        let (name, username) = match self {
+            Sender::User(user) => (user.full_name(), user.username.as_deref()),
+            Sender::Channel(chat) => (chat.title().unwrap_or_default().to_owned(), chat.username()),
+        };
+        match username {
+            Some(username) => format!("{name} @{username}"),
+            None => name,
+        }
+    }
+
     /// A name that is safe to repeat in the group: the full name (user) or
     /// title (channel) with anything that looks like a link or a mention
     /// removed and cut short, else `id N`. Spammers put ads in their names,

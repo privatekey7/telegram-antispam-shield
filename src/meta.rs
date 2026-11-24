@@ -100,13 +100,14 @@ pub fn mixed_script_words(text: &str) -> usize {
 /// Emoji in `text` as a person counts them (custom emoji arrive as such
 /// placeholders too). A flag is a pair of regional indicator letters and
 /// counts once; so does an emoji with a skin tone (`👍🏽`) and a sequence
-/// joined into one picture (`👨‍👩‍👧`), which would otherwise make five
-/// thumbs-up look like an emoji wall.
+/// joined into one picture (`👨‍👩‍👧`, `🏳️‍🌈`), which would otherwise make five
+/// thumbs-up look like an emoji wall. Only a person, a flag or a heart starts
+/// such a picture: other emoji render apart whatever joins them.
 pub fn emoji_count(text: &str) -> usize {
     let (mut emoji, mut regional) = (0usize, 0usize);
-    // Emoji joined to the current picture so far, and whether a joiner
+    // Emoji the current picture may still take in, and whether a joiner
     // precedes this character.
-    let (mut joined, mut after_joiner) = (0usize, false);
+    let (mut room, mut after_joiner) = (0usize, false);
     for c in text.chars() {
         if c == ZERO_WIDTH_JOINER {
             after_joiner = true;
@@ -118,11 +119,15 @@ pub fn emoji_count(text: &str) -> usize {
         if is_regional_indicator(c) {
             regional += 1;
         } else if is_emoji(c) {
-            if after_joiner && joined < MAX_JOINED_EMOJI {
-                joined += 1;
+            if after_joiner && room > 0 {
+                room -= 1;
             } else {
                 emoji += 1;
-                joined = 0;
+                room = if starts_joined_picture(c) {
+                    MAX_JOINED_EMOJI
+                } else {
+                    0
+                };
             }
         }
         after_joiner = false;
@@ -134,6 +139,29 @@ const ZERO_WIDTH_JOINER: char = '\u{200D}';
 /// Emoji a joiner may add to one picture. Real sequences join at most four
 /// (`👨‍👩‍👧‍👦`); a wall glued together with joiners is still a wall.
 const MAX_JOINED_EMOJI: usize = 3;
+
+/// Emoji that real joined sequences start with: people, the white and black
+/// flags (`🏳️‍🌈`, `🏴‍☠️`), the heart (`❤️‍🔥`) and the eye.
+fn starts_joined_picture(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x1F466..=0x1F469
+            | 0x1F46E..=0x1F487
+            | 0x1F3C3..=0x1F3CC
+            | 0x1F645..=0x1F64E
+            | 0x1F6A3
+            | 0x1F6B4..=0x1F6B6
+            | 0x1F926
+            | 0x1F937..=0x1F93E
+            | 0x1F9B8..=0x1F9B9
+            | 0x1F9CD..=0x1F9DF
+            | 0x1F575
+            | 0x26F9
+            | 0x1F3F3..=0x1F3F4
+            | 0x1F441
+            | 0x2764
+    )
+}
 
 /// Characters that only restyle the emoji before them: skin tones and the
 /// variation selectors.
@@ -212,8 +240,11 @@ mod tests {
         assert_eq!(emoji_count("👍🏽👍🏽👍🏽👍🏽👍🏽"), 5);
         assert_eq!(emoji_count("👨‍👩‍👧‍👦 и 👩‍💻"), 2);
         assert_eq!(emoji_count("🏳️‍🌈❤️"), 2);
+        assert_eq!(emoji_count("👩🏽‍❤️‍💋‍👨🏻"), 1);
         let glued = ["🍓"; 12].join("\u{200D}");
-        assert_eq!(emoji_count(&glued), 3, "joiners do not hide a wall");
+        assert_eq!(emoji_count(&glued), 12, "joiners do not hide a wall");
+        let people = ["👩"; 12].join("\u{200D}");
+        assert_eq!(emoji_count(&people), 3, "a picture joins four at most");
     }
 
     #[test]

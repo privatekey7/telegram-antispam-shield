@@ -46,6 +46,9 @@ pub struct Settings {
     pub block_invite_links: bool,
     /// Treat job and income offers with pay or "DM me" as spam.
     pub block_job_offers: bool,
+    /// Treat ads in a member's name or bio as spam, checked on join and on
+    /// every message (see [`crate::heuristics::is_profile_ad`]).
+    pub block_profile_ads: bool,
     /// Treat invisible characters inside words (`act\u{200B}ive`) as spam.
     pub block_hidden_characters: bool,
     /// Treat inline buttons on a person's message as spam (only automation,
@@ -121,6 +124,7 @@ impl Default for Settings {
             threshold: None,
             block_invite_links: true,
             block_job_offers: true,
+            block_profile_ads: true,
             block_hidden_characters: true,
             block_inline_keyboards: true,
             exempt_admins: true,
@@ -231,12 +235,23 @@ fn env_count(key: &str, default: usize) -> usize {
 }
 
 fn env_bool(key: &str, default: bool) -> bool {
-    match env::var(key) {
-        Ok(v) => matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
-        Err(_) => default,
+    let raw = env::var(key).ok();
+    parse_bool(raw.as_deref()).unwrap_or_else(|| {
+        if raw.is_some_and(|v| !v.trim().is_empty()) {
+            tracing::warn!("{key} is not true or false: using the default ({default})");
+        }
+        default
+    })
+}
+
+/// `true`/`false` (also `1`/`0`, `yes`/`no`, `on`/`off`); `None` when unset,
+/// blank or anything else, so the default applies. A blank `KEY=` line or a
+/// typo must not silently switch off a check that is on by default.
+fn parse_bool(raw: Option<&str>) -> Option<bool> {
+    match raw?.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
     }
 }
 
@@ -256,6 +271,7 @@ impl Settings {
                 .filter(|t| (0.0..=1.0).contains(t)),
             block_invite_links: env_bool("ANTISPAM_BLOCK_INVITE_LINKS", d.block_invite_links),
             block_job_offers: env_bool("ANTISPAM_BLOCK_JOB_OFFERS", d.block_job_offers),
+            block_profile_ads: env_bool("ANTISPAM_BLOCK_PROFILE_ADS", d.block_profile_ads),
             block_hidden_characters: env_bool(
                 "ANTISPAM_BLOCK_HIDDEN_CHARACTERS",
                 d.block_hidden_characters,
@@ -442,6 +458,17 @@ pub fn bot_token() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bool_parsing_keeps_the_default_for_blank_or_unknown_values() {
+        assert_eq!(parse_bool(Some(" TRUE ")), Some(true));
+        assert_eq!(parse_bool(Some("on")), Some(true));
+        assert_eq!(parse_bool(Some("0")), Some(false));
+        assert_eq!(parse_bool(Some("No")), Some(false));
+        assert_eq!(parse_bool(Some("")), None);
+        assert_eq!(parse_bool(Some("ture")), None);
+        assert_eq!(parse_bool(None), None);
+    }
 
     #[test]
     fn action_parsing() {

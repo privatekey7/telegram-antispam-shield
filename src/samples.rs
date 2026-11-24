@@ -45,10 +45,7 @@ const MIN_WORDS: usize = 3;
 /// first appearance, from the first [`MAX_CHARS`] chars, at most
 /// [`MAX_WORDS`] of them.
 fn words(text: &str) -> Vec<String> {
-    let start: String = text::strip_invisible(text)
-        .chars()
-        .take(MAX_CHARS)
-        .collect();
+    let start: String = text::fold(text).chars().take(MAX_CHARS).collect();
     let mut seen = HashSet::new();
     start
         .split(|c: char| !c.is_alphanumeric())
@@ -102,6 +99,15 @@ struct Sample {
     words: Vec<u64>,
 }
 
+/// Which kinds of learned samples a message resembles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Resemblance {
+    /// Like a message an admin marked as not spam.
+    pub ham: bool,
+    /// Like a message an admin marked as spam.
+    pub spam: bool,
+}
+
 /// Spam and ham samples per chat, mirrored to the [`Store`] if any.
 pub struct Samples {
     threshold: f32,
@@ -139,6 +145,29 @@ impl Samples {
     /// spam.
     pub fn resembles_ham(&self, chat: i64, text: &str) -> bool {
         self.resembles(chat, SampleKind::Ham, text)
+    }
+
+    /// Which samples learned in `chat` `text` resembles; spam samples are
+    /// compared only when `check_spam` (a trusted sender's text is not). The
+    /// text is split into words once for both kinds, and not at all when
+    /// the chat has no samples to compare.
+    pub fn resemblance(&self, chat: i64, text: &str, check_spam: bool) -> Resemblance {
+        let ham = self.lists.get(&(chat, SampleKind::Ham));
+        let spam = self
+            .lists
+            .get(&(chat, SampleKind::Spam))
+            .filter(|_| check_spam);
+        if ham.is_none() && spam.is_none() {
+            return Resemblance::default();
+        }
+        let message = fingerprint(&words(text));
+        let matches = |samples: Option<&VecDeque<Sample>>| {
+            samples.is_some_and(|samples| self.matches_any(&message, samples))
+        };
+        Resemblance {
+            ham: matches(ham),
+            spam: matches(spam),
+        }
     }
 
     /// Learn `text` as an example of `kind` in `chat`. Too-short texts and
@@ -250,11 +279,14 @@ impl Samples {
         let Some(samples) = self.lists.get(&(chat, kind)) else {
             return false;
         };
-        let message = fingerprint(&words(text));
+        self.matches_any(&fingerprint(&words(text)), samples)
+    }
+
+    fn matches_any(&self, message: &[u64], samples: &VecDeque<Sample>) -> bool {
         message.len() >= MIN_WORDS
             && samples
                 .iter()
-                .any(|sample| cosine(&message, &sample.words) >= self.threshold)
+                .any(|sample| cosine(message, &sample.words) >= self.threshold)
     }
 }
 
@@ -302,6 +334,18 @@ mod tests {
         assert!(samples.resembles_spam(CHAT, PROMO));
         assert!(!samples.resembles_spam(OTHER_CHAT, PROMO));
         assert!(!samples.resembles_ham(OTHER_CHAT, PROMO));
+        assert_eq!(
+            samples.resemblance(CHAT, PROMO, true),
+            Resemblance {
+                ham: true,
+                spam: true
+            }
+        );
+        assert!(!samples.resemblance(CHAT, PROMO, false).spam);
+        assert_eq!(
+            samples.resemblance(OTHER_CHAT, PROMO, true),
+            Resemblance::default()
+        );
     }
 
     #[test]

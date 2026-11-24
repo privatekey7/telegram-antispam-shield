@@ -226,6 +226,8 @@ before upgrades (CHANGELOG says when the schema changes).
 Release images from 0.2.1 on are signed with
 [cosign](https://docs.sigstore.dev/) (keyless, by the Release workflow) and
 carry an SPDX SBOM and SLSA provenance. 0.2.0 and older are not signed.
+Use cosign 3 (or 2.6 with `--new-bundle-format`): images after 0.4.0 carry
+a Sigstore bundle that older cosign reports as "no signatures found".
 
 ```bash
 image=ghcr.io/privatekey7/telegram-antispam-shield:<version>

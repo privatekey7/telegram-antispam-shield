@@ -192,7 +192,7 @@ All commands run on the server from `/opt/antispam-shield`.
 | Restart | `docker compose restart bot` |
 | Change settings | edit `.env`, then `docker compose up -d` |
 | Roll back | `./deploy.sh deploy-<previous commit>@sha256:<digest>` (the previous value is in `.env.previous`) |
-| Verify a deployed image | `cosign verify ghcr.io/<you>/telegram-antispam-shield@sha256:<digest> --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity-regexp '^https://github\.com/<you>/telegram-antispam-shield/\.github/workflows/deploy\.yml@refs/heads/main$'` |
+| Verify a deployed image | `cosign verify ghcr.io/<you>/telegram-antispam-shield@sha256:<digest> --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity-regexp '^https://github\.com/<you>/telegram-antispam-shield/\.github/workflows/deploy\.yml@refs/heads/main$'` (cosign 3, or 2.6 with `--new-bundle-format`) |
 | Stop | `docker compose down` |
 
 ### Troubleshooting

@@ -17,11 +17,12 @@ use std::sync::LazyLock;
 /// (`t.me/+...`, `telegram.me/+...`, `telegram.dog/joinchat/...`), the
 /// `tg://join` deep link, and copies with a space around the dot or slash
 /// (`t. me/+...`). The `+` form needs an invite hash after it, so a spaced
-/// "it. Me/+1" is not a link.
+/// "it. Me/+1" is not a link. The domain must start a word: `chat.me/+abcd`
+/// and `support.me/+1234` are other sites.
 static INVITE_LINK: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?ix)
-        (t|telegram)\s?\.\s?(me|dog)\s?/\s?(\+[\w-]{4,}|joinchat)
+        \b(t|telegram)\s?\.\s?(me|dog)\s?/\s?(\+[\w-]{4,}|joinchat)
       | tg:\s?//\s?join\?invite=
         ",
     )
@@ -182,6 +183,9 @@ mod tests {
         assert!(!is_invite_link("привет, как дела?"));
         assert!(!is_invite_link("telegram.me/openchannel"));
         assert!(!is_invite_link("I'll take it. Me/+1 for that"));
+        assert!(!is_invite_link("https://support.me/+abcd1234"));
+        assert!(!is_invite_link("chat.me/joinchat"));
+        assert!(!is_invite_link("mytelegram.me/+abcd1234"));
     }
 
     #[test]

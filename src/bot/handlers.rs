@@ -2,8 +2,8 @@
 //! private commands.
 
 use std::borrow::Cow;
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use teloxide::prelude::*;
 use teloxide::types::{Chat, ChatMemberUpdated, MessageEntityKind, MessageId, MessageKind, User};
@@ -13,6 +13,7 @@ use telegram_antispam_shield::config::Action;
 use telegram_antispam_shield::flood::{FloodVerdict, IncomingMessage};
 use telegram_antispam_shield::moderation::{MessageFacts, Reason, Verdict};
 use telegram_antispam_shield::shield::Incoming;
+use telegram_antispam_shield::trust;
 
 use super::actions::{self, FloodAction, Sender};
 use super::reports::{self, Incident};
@@ -139,12 +140,7 @@ async fn moderate(bot: &Bot, state: &AppState, msg: &Message, edited: bool) {
         },
         edited,
     };
-    let (decision, recent) = {
-        let mut shield = state.shield();
-        let decision = shield.inspect(&incoming, Instant::now());
-        let recent = shield.recent_from(incoming.chat, incoming.sender);
-        (decision, recent)
-    };
+    let decision = state.shield().inspect(&incoming, Instant::now());
 
     let Verdict::Spam { score, reason } = decision.verdict else {
         if decision.newly_trusted {
@@ -175,6 +171,7 @@ async fn moderate(bot: &Bot, state: &AppState, msg: &Message, edited: bool) {
     let punishes = state.settings.action != Action::DeleteOnly;
     if punishes && state.settings.cleanup_on_ban {
         // The spammer's other recent messages go too.
+        let recent = state.shield().recent_from(incoming.chat, incoming.sender);
         doomed.extend(recent);
     }
     doomed.sort_unstable();
@@ -354,7 +351,8 @@ fn check_flood(
         text,
         media_group_id: msg.media_group_id().map(|g| g.0.as_str()),
     };
-    match state.flood().check(incoming, Instant::now()) {
+    let at = sent_at(msg, clock_anchor());
+    match state.flood().check(incoming, at) {
         FloodVerdict::Allow => None,
         FloodVerdict::Flood {
             reason,
@@ -367,6 +365,30 @@ fn check_flood(
             mute_for,
             strike,
         }),
+    }
+}
+
+/// One moment on both clocks, taken once: the monotonic one the flood rules
+/// run on and Unix seconds, which message dates use.
+fn clock_anchor() -> (Instant, i64) {
+    static ANCHOR: OnceLock<(Instant, i64)> = OnceLock::new();
+    *ANCHOR.get_or_init(|| (Instant::now(), trust::unix_now()))
+}
+
+/// When `msg` was sent, on the clock the flood rules run on: its date placed
+/// relative to `anchor`. Telegram hands over everything written while the
+/// bot was down or offline in one burst; judged by arrival time, a member's
+/// ordinary messages from those minutes would look like a flood and get them
+/// muted. The gap between two messages is the gap between their dates,
+/// whenever they are handled.
+fn sent_at(msg: &Message, (anchor, anchor_unix): (Instant, i64)) -> Instant {
+    let offset = msg.date.timestamp().saturating_sub(anchor_unix);
+    let span = Duration::from_secs(offset.unsigned_abs());
+    if offset >= 0 {
+        anchor.checked_add(span).unwrap_or(anchor)
+    } else {
+        // Older than the machine's clock can express: as old as it gets.
+        anchor.checked_sub(span).unwrap_or(anchor)
     }
 }
 
@@ -537,6 +559,44 @@ mod tests {
             .unwrap()
             .extend(content.as_object().unwrap().clone());
         serde_json::from_str(&json.to_string()).unwrap()
+    }
+
+    #[test]
+    fn a_backlog_delivered_at_once_is_not_a_flood() {
+        // Arrange: eight messages written 3 s apart, all handled at once.
+        use telegram_antispam_shield::flood::{FloodConfig, FloodGuard};
+        let anchor = (Instant::now(), 1_800_000_000);
+        let mut guard = FloodGuard::new(FloodConfig::default());
+
+        // Act
+        let verdicts: Vec<FloodVerdict> = (0..8)
+            .map(|i| {
+                let date = anchor.1 - 3 * (7 - i);
+                let msg = message(serde_json::json!({"message_id": i, "date": date}));
+                let incoming = IncomingMessage {
+                    chat_id: msg.chat.id.0,
+                    sender_id: 5,
+                    message_id: msg.id.0,
+                    text: None,
+                    media_group_id: None,
+                };
+                guard.check(incoming, sent_at(&msg, anchor))
+            })
+            .collect();
+
+        // Assert
+        assert!(verdicts.iter().all(|v| *v == FloodVerdict::Allow));
+    }
+
+    #[test]
+    fn the_gap_between_messages_is_the_gap_between_their_dates() {
+        let anchor = (Instant::now(), 1_800_000_000);
+        let earlier = message(serde_json::json!({"date": anchor.1 - 4}));
+        let later = message(serde_json::json!({"date": anchor.1 + 6}));
+
+        let gap = sent_at(&later, anchor).duration_since(sent_at(&earlier, anchor));
+
+        assert_eq!(gap, Duration::from_secs(10));
     }
 
     #[test]

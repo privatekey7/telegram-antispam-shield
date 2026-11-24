@@ -172,7 +172,7 @@ pub fn classify(
     if settings.block_newcomer_links && standing.newcomer && has_link {
         return rule(Reason::NewcomerLink);
     }
-    if let Some(reason) = shape_rule(settings, content) {
+    if let Some(reason) = shape_rule(settings, content, facts.text) {
         return rule(reason);
     }
     if settings.block_job_offers && heuristics::is_job_offer(content) {
@@ -202,15 +202,19 @@ pub fn is_profile_spam(settings: &Settings, name: &str, bio: Option<&str>) -> bo
 }
 
 /// Opt-in word lists and the shape checks of [`meta`], in order of precision.
-fn shape_rule(settings: &Settings, content: &str) -> Option<Reason> {
-    let lowered = content.to_lowercase();
+/// Emoji are counted in the `visible` text as sent: `content` has lost the
+/// joiners that make several emoji one picture.
+fn shape_rule(settings: &Settings, content: &str, visible: &str) -> Option<Reason> {
     let reached = |limit: usize, count: usize| limit > 0 && count >= limit;
+    let has_stop_word = || {
+        let lowered = content.to_lowercase();
+        settings
+            .stop_words
+            .iter()
+            .any(|w| lowered.contains(w.as_str()))
+    };
 
-    if settings
-        .stop_words
-        .iter()
-        .any(|w| lowered.contains(w.as_str()))
-    {
+    if !settings.stop_words.is_empty() && has_stop_word() {
         Some(Reason::StopWord)
     } else if meta::blocked_script(content, &settings.blocked_scripts).is_some() {
         Some(Reason::BlockedScript)
@@ -221,7 +225,8 @@ fn shape_rule(settings: &Settings, content: &str) -> Option<Reason> {
         meta::mixed_script_words(content),
     ) {
         Some(Reason::MixedScripts)
-    } else if reached(settings.emoji_limit, meta::emoji_count(content)) {
+    } else if settings.emoji_limit > 0 && reached(settings.emoji_limit, meta::emoji_count(visible))
+    {
         Some(Reason::TooManyEmoji)
     } else if reached(settings.link_limit, heuristics::link_count(content)) {
         Some(Reason::TooManyLinks)

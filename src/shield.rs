@@ -135,12 +135,13 @@ impl Shield {
                 .record(msg.chat, msg.sender, msg.message_id, text, now)
         };
         let standing = self.standing(msg.chat, msg.sender, now);
-        let vouched = text.is_some_and(|t| self.samples.resembles_ham(msg.chat, t));
+        let resemblance = text
+            .map(|t| self.samples.resemblance(msg.chat, t, !standing.trusted))
+            .unwrap_or_default();
+        let vouched = resemblance.ham;
 
-        let learned = (!standing.trusted
-            && !vouched
-            && text.is_some_and(|t| self.samples.resembles_spam(msg.chat, t)))
-        .then(|| spam(Reason::LearnedSpam, Vec::new()));
+        let learned = (!standing.trusted && !vouched && resemblance.spam)
+            .then(|| spam(Reason::LearnedSpam, Vec::new()));
         let mut decision = self
             .history_rule(msg.chat, &echoes, standing)
             .or(learned)

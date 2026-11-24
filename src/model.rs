@@ -49,6 +49,9 @@ impl Model {
             bail!("unsupported model version {version}");
         }
         let num_buckets = u32::from_le_bytes(buf[8..12].try_into().unwrap()) as u64;
+        if num_buckets == 0 {
+            bail!("model has no weights");
+        }
         let char_min = buf[12] as usize;
         let char_max = buf[13] as usize;
         let word_ngram_max = buf[14];
@@ -127,6 +130,14 @@ mod tests {
         let m = Model::load_default().expect("embedded model must load");
         assert!(m.num_buckets > 0);
         assert!(m.threshold > 0.0 && m.threshold < 1.0);
+    }
+
+    #[test]
+    fn rejects_a_model_without_weights() {
+        let mut header = Vec::from(*MAGIC);
+        header.extend(1u32.to_le_bytes());
+        header.extend([0u8; 16]);
+        assert!(Model::from_bytes(&header).is_err());
     }
 
     #[test]

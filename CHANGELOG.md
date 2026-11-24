@@ -46,6 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The state file uses `synchronous=NORMAL` with WAL: writes no longer wait
   for the disk. The file cannot be corrupted by this; a power cut may lose
   the last few writes.
+- Images are signed with cosign 3. The signature is now a Sigstore bundle
+  that cosign 2.5 and older do not find ("no signatures found"): verify with
+  cosign 3, or 2.6 with `--new-bundle-format`. Older images still verify
+  with cosign 3.
 
 ## [0.4.0] - 2026-11-17
 

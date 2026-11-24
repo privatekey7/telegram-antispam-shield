@@ -230,6 +230,8 @@ compose.yaml монтирует туда маленький tmpfs. Путь ме
 Образы релизов начиная с 0.2.1 подписаны [cosign](https://docs.sigstore.dev/)
 (без ключей, workflow Release) и несут SBOM в формате SPDX и provenance SLSA.
 0.2.0 и более ранние не подписаны.
+Нужен cosign 3 (или 2.6 с `--new-bundle-format`): у образов после 0.4.0
+подпись в формате Sigstore bundle, и старый cosign пишет «no signatures found».
 
 ```bash
 image=ghcr.io/privatekey7/telegram-antispam-shield:<версия>

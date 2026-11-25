@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-25
+
 ### Fixed
 - Styled letters no longer hide spam from the rules. Mathematical
   bold/italic/script (`𝐫𝐞𝐦𝐨𝐭𝐞 𝐰𝐨𝐫𝐤`), fullwidth (`ｔ.ｍｅ/+…`), circled
@@ -50,6 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that cosign 2.5 and older do not find ("no signatures found"): verify with
   cosign 3, or 2.6 with `--new-bundle-format`. Older images still verify
   with cosign 3.
+
+### Security
+- `url` 2.5.9 (RUSTSEC-2026-0592): 2.5.8 could overflow the stack in
+  `Url::origin()` on nested `blob:` URLs. `form_urlencoded` moves to 1.2.3.
+- `rusqlite` 0.43.0 with `libsqlite3-sys` 0.40.0 (bundled SQLite).
 
 ## [0.4.0] - 2026-11-17
 
@@ -396,7 +403,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-stage, non-root Dockerfile and Railway deploy config.
 - GitHub Actions CI: rustfmt, clippy, tests, `cargo audit`, gitleaks.
 
-[Unreleased]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/privatekey7/telegram-antispam-shield/compare/v0.2.2...v0.3.0

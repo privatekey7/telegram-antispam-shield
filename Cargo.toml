@@ -1,6 +1,6 @@
 [package]
 name = "telegram-antispam-shield"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 rust-version = "1.89"
 description = "Lightweight Telegram anti-spam bot (RU/EN) with a small embedded ML model."
